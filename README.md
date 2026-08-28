@@ -69,6 +69,13 @@ This diffs Sleeper's live scoring settings against the YAML.
 
 ---
 
+> **New here, or unsure which shell to use?** Read
+> **[`docs/running.md`](docs/running.md)** first. It covers cloning to your own
+> laptop, the difference between PowerShell and Terminal, and which commands
+> change on Windows. Short version: the code is not "in the cloud" — clone it and
+> run it locally, and every `python -m src.cli ...` command is identical on all
+> three operating systems.
+
 ## Cutting a release
 
 The container is built and published by CI, not by hand.
@@ -270,6 +277,7 @@ tests/               260 tests
 docs/
   lock_in_mechanics.md   what was verified vs assumed, with sources
   lockin_strategy.md     how to play Lock-In, measured (incl. the 37% rule)
+  running.md             per-OS setup: PowerShell vs Terminal, Docker vs Python
   data_sources.md        how to get real data in
   assumptions.md         full assumption register + known gaps
   schemas.md             data contracts

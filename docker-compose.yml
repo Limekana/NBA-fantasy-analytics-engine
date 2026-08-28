@@ -16,5 +16,8 @@ services:
       - ./config:/app/config
       - ./data:/app/data
       - ./outputs:/app/outputs
-    # Keeps bind-mounted files owned by you rather than root on Linux.
-    user: "${UID:-1000}:${GID:-1000}"
+    # No `user:` override on purpose. The image already runs as uid 1000
+    # (USER analyst in the Dockerfile), which keeps bind-mounted output owned by
+    # a normal user rather than root. Setting `user: "${UID}:${GID}"` here looks
+    # tidier but breaks on Windows and macOS, where those variables do not exist
+    # and Compose substitutes empty strings.
