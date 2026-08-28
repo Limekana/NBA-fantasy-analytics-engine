@@ -269,6 +269,7 @@ src/
 tests/               260 tests
 docs/
   lock_in_mechanics.md   what was verified vs assumed, with sources
+  lockin_strategy.md     how to play Lock-In, measured (incl. the 37% rule)
   data_sources.md        how to get real data in
   assumptions.md         full assumption register + known gaps
   schemas.md             data contracts
