@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nba-fantasy-analytics-engine"
+version = "0.1.0"
+description = "Quantitative draft and valuation system for Sleeper Lock-In fantasy basketball"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "PyYAML>=6.0",
+    "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+ingest = ["nba_api>=1.4", "requests>=2.31"]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+# Without this, a bare `pytest` fails with "No module named 'src'" while
+# `python -m pytest` succeeds - the latter puts the working directory on
+# sys.path and the former does not. Pinning it here makes both work, so a
+# contributor's habit does not decide whether the suite runs.
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    "error::RuntimeWarning:src.*",
+]
