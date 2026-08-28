@@ -18,6 +18,121 @@ from src.config import RAW_DIR, load_config, validate
 from src.scoring import ScoringEngine
 
 
+DATA_HELP = """
+The pipeline needs THREE things. Only the first is required.
+
+===============================================================================
+1. GAME LOGS  (required)  ->  data/raw/<season>/anything.csv
+===============================================================================
+
+EASIEST - let the tool fetch it (needs internet, ~2 min/season):
+
+    pip install nba_api
+    python -m src.cli ingest --season 2025-26 --source nba_api
+    python -m src.cli ingest --season 2024-25 --source nba_api
+    python -m src.cli ingest --season 2023-24 --source nba_api
+
+  Sanity check: a full season is ~26,000 rows. The command prints the count.
+  If you get a few hundred, the endpoint truncated - do not build a board on it.
+  You need >= 2 seasons for `backtest` to run at all.
+
+MANUAL - any CSV works. Sources, best first:
+
+  * Basketball Reference -> any player game-log page -> "Share & Export" ->
+    "Get table as CSV". Free. Tedious for a whole league, fine for spot checks.
+  * Kaggle - search "NBA player game logs"; several maintained dumps exist.
+    Download, unzip, drop the CSV in. Check it covers the seasons you want.
+  * nbastuffer / hoopR (R package) - both export game-level CSV.
+
+  Put the file anywhere under data/raw/<season>/ and the pipeline finds it.
+
+  COLUMN NAMES: you do NOT need to rename anything. These are all recognised
+  automatically, case-insensitively:
+
+    what it is        canonical name          also accepted
+    ----------------  ----------------------  ---------------------------
+    player            player_name             Player, PLAYER_NAME, Name
+    date              game_date               Date, GAME_DATE
+    team              team                    Tm, TEAM_ABBREVIATION
+    opponent          opponent                Opp, or parsed from MATCHUP
+    minutes           minutes                 MIN, MP   ("34:12" or 34.2)
+    points            points                  PTS
+    rebounds          rebounds                REB, TRB
+    assists           assists                 AST
+    steals            steals                  STL
+    blocks            blocks                  BLK
+    turnovers         turnovers               TOV, TO
+    fouls             personal_fouls          PF, Fouls
+    free throws made  free_throws_made        FTM, FT
+    threes made       three_pointers_made     FG3M, 3P, TPM
+
+  REQUIRED: player, date, and the nine box-score stats. Everything else is
+  optional - player_id and game_id are generated if absent, and opponent/home
+  are parsed out of a MATCHUP column when one exists.
+
+  A minimal valid CSV looks exactly like this:
+
+    Player,Date,Tm,MIN,PTS,TRB,AST,STL,BLK,TOV,PF,FT,3P
+    Nikola Jokic,2025-10-21,DEN,35.2,28,12,11,1,1,3,2,5,2
+
+  Then:  python -m src.cli build-board --seasons 2025-26 2024-25 2023-24
+
+===============================================================================
+2. PLAYER METADATA  (strongly recommended)  ->  pass with --players
+===============================================================================
+
+Game logs carry no age and no position. Without them the model defaults every
+player to age 27 (and says so in assumption_notes) and cannot compute positional
+scarcity.
+
+    python -c "from src.ingestion.sleeper_source import SleeperSource; \
+    SleeperSource().fetch_players().to_csv('data/external/players.csv', index=False)"
+
+  Free, public, no API key. Also gives current injury_status.
+  Or write your own CSV:  player_name,team,position,age
+
+===============================================================================
+3. SCHEDULE  (highest-leverage optional input)  ->  pass with --schedule
+===============================================================================
+
+Lock-In value depends directly on games per fantasy week. Without the real
+2026-27 schedule the model falls back to historical cadence, which cannot tell a
+player on a 4-game-week-heavy schedule from one who is not.
+
+    python -c "from src.ingestion.nba_api_source import NBAScheduleSource; \
+    NBAScheduleSource().fetch_schedule('2026-27').to_csv( \
+    'data/external/schedule_2026-27.csv', index=False)"
+
+  Format:  game_date,home_team,away_team    (game_id and season optional)
+
+===============================================================================
+4. ADP  (optional; enables market-value analysis)  ->  data/external/adp/
+===============================================================================
+
+Without it the board ranks on model value only and cannot flag bargains.
+Any CSV with two columns works:
+
+    player_name,adp
+    Nikola Jokic,1.4
+
+Register each file in config/sources.yaml under adp.sources with its name,
+retrieved_at, league_format and scoring_format. Multiple sources are combined by
+median and their disagreement is reported - never trust a single source.
+
+NOTE: published NBA ADP is almost always 9-cat or standard points, NOT Sleeper
+Lock-In with these bonuses. That mismatch IS the edge, but record the real
+scoring_format so you remember the board is comparing against a different game.
+
+===============================================================================
+Then, in order:
+    python -m src.cli check-config     # confirm scoring is right
+    python -m src.cli backtest         # NEVER SKIP - validates the model
+    python -m src.cli build-board      # produce the board
+    python -m src.cli draft --pick N   # on draft day
+===============================================================================
+"""
+
+
 def _print_header(text: str) -> None:
     print("\n" + "=" * 72)
     print(text)
@@ -92,6 +207,8 @@ def cmd_scoring_check(args) -> int:
         ("14 assists", dict(points=5, assists=14)),
         ("15 assists exactly", dict(points=5, assists=15)),
         ("16 assists", dict(points=5, assists=16)),
+        ("19 rebounds", dict(points=5, rebounds=19)),
+        ("20 rebounds exactly", dict(points=5, rebounds=20)),
         ("50/10/15 (everything at once)", dict(points=50, rebounds=10, assists=15)),
         ("Typical star line", dict(points=28, rebounds=8, assists=6, steals=1, blocks=1,
                                    turnovers=3, personal_fouls=2, free_throws_made=6,
@@ -159,11 +276,15 @@ def cmd_demo(args) -> int:
     _print_header("SYNTHETIC END-TO-END DEMO")
     print("\n*** SYNTHETIC DATA - NOT REAL PLAYERS, NOT A REAL PROJECTION ***\n")
 
-    season = args.season or "2025-26"
-    path, players, logs = write_synthetic_season(RAW_DIR, season, n_players=args.players)
-    print(f"Generated {len(players)} players / {len(logs):,} game rows -> {path}")
+    seasons = args.seasons or ["2023-24", "2024-25", "2025-26"]
+    _path, players, logs = write_synthetic_season(
+        RAW_DIR, n_players=args.players, seasons=seasons
+    )
+    print(f"Generated {len(players)} players / {len(logs):,} game rows "
+          f"across {len(seasons)} seasons")
+    print("Run `python -m src.cli backtest` to exercise the backtest machinery.\n")
 
-    return _run_and_report(cfg, [season], players=players, verbose=args.verbose)
+    return _run_and_report(cfg, seasons, players=players, verbose=args.verbose)
 
 
 def cmd_build_board(args) -> int:
@@ -299,6 +420,138 @@ def cmd_availability(args) -> int:
     return 0
 
 
+def cmd_backtest(args) -> int:
+    """Backtest the projection model and the Lock-In strategies.
+
+    Handoff sec.20 calls this mandatory before trusting the model.
+    """
+    from src.backtest import backtest_lockin_strategies, backtest_projections
+    from src.pipeline import derive_players, load_seasons
+
+    cfg = load_config()
+    _print_header("BACKTEST")
+
+    seasons = args.seasons or ["2025-26", "2024-25", "2023-24"]
+    try:
+        logs = load_seasons(cfg, seasons)
+    except FileNotFoundError as exc:
+        print(f"\n{exc}")
+        return 1
+
+    players = pd.read_csv(args.players) if args.players else derive_players(logs)
+    if "position" not in logs.columns and "position" in players.columns:
+        logs = logs.merge(players[["player_id", "position"]], on="player_id", how="left")
+    scored = ScoringEngine(cfg.scoring).score_dataframe(logs)
+
+    synthetic = bool(scored["is_synthetic"].any()) if "is_synthetic" in scored.columns else False
+    if synthetic:
+        print("\n*** SYNTHETIC DATA - these results validate the BACKTEST MACHINERY,")
+        print("    not the model. Real conclusions need real game logs. ***")
+
+    # --- 1. Lock-In strategies on real weekly sequences ---
+    print("\n" + "-" * 72)
+    print("LOCK-IN STRATEGY BACKTEST")
+    print("-" * 72)
+    print("Replays each locking policy over actual chronological fantasy weeks.")
+    print("No projection involved - this is what each rule would have banked.\n")
+    try:
+        lockin = backtest_lockin_strategies(scored, cfg, season=args.lockin_season)
+        frame = lockin.to_frame()
+        print(frame.to_string(index=False))
+        print(f"\n{lockin.n_weeks:,} player-weeks across {lockin.n_players} players")
+
+        per_week = lockin.strategy_per_week
+        floor_value = per_week.get("last_game", 0.0)
+        best = max((v for k, v in per_week.items() if k != "perfect"), default=0.0)
+        available = best - floor_value
+        if available > 0:
+            print("\nShare of the available edge captured by each policy")
+            print("(0% = never locking, 100% = the best realistic policy):")
+            for name, value in sorted(per_week.items(), key=lambda kv: -kv[1]):
+                if name == "perfect":
+                    continue
+                print(f"  {name:<14} {(value - floor_value) / available * 100:6.1f}%")
+    except ValueError as exc:
+        print(f"  skipped: {exc}")
+
+    # --- 2. Projection model vs naive baselines ---
+    print("\n" + "-" * 72)
+    print("PROJECTION BACKTEST")
+    print("-" * 72)
+    available_seasons = sorted(scored["season"].dropna().unique())
+    target = args.target_season or (available_seasons[-1] if available_seasons else None)
+    if target is None or len(available_seasons) < 2:
+        print("\n  SKIPPED: needs at least two seasons of data.")
+        print(f"  Seasons present: {available_seasons or 'none'}")
+        print("  Ingest an earlier season and re-run - the projection model is")
+        print("  UNVALIDATED until this passes.")
+        return 0
+
+    print(f"\nTraining on seasons before {target}; predicting {target}.")
+    print("Scored on rank correlation, because drafting is a ranking problem.\n")
+    try:
+        metrics, comparison = backtest_projections(scored, players, cfg, target)
+    except ValueError as exc:
+        print(f"  SKIPPED: {exc}")
+        return 0
+
+    table = pd.DataFrame([m.to_row() for m in metrics])
+    print(table.to_string(index=False))
+
+    model = next((m for m in metrics if m.name == "model"), None)
+    baselines = [m for m in metrics if m.name != "model"]
+    if model and baselines:
+        best_baseline = max(baselines, key=lambda m: m.spearman)
+        delta = model.spearman - best_baseline.spearman
+        print("\nVERDICT")
+        if delta > 0.01:
+            print(f"  Model beats the best baseline ({best_baseline.name}) by "
+                  f"{delta:+.4f} Spearman.")
+        elif delta > -0.01:
+            print(f"  Model is level with {best_baseline.name} ({delta:+.4f} Spearman).")
+            print("  It adds no ranking value yet. Handoff Rule 5: do not keep")
+            print("  complexity that does not earn its place.")
+        else:
+            print(f"  *** Model LOSES to {best_baseline.name} by {abs(delta):.4f} "
+                  f"Spearman. ***")
+            print("  Investigate before trusting the board. Handoff sec.20.")
+
+    # --- 3. optional weight tuning ---
+    if args.tune:
+        from src.backtest import tune_projection_weights
+
+        print("\n" + "-" * 72)
+        print("PROJECTION WEIGHT TUNING  (handoff sec.6)")
+        print("-" * 72)
+        print("Grid search over season-blend weights and shrinkage.\n")
+        grid = tune_projection_weights(scored, players, cfg, target)
+        if grid.empty:
+            print("  No configurations could be evaluated.")
+        else:
+            print(grid.head(15).to_string(index=False))
+            best = grid.iloc[0]
+            print(f"\n  Best: {best['profile']} (weights {best['weights']}, "
+                  f"k={best['shrinkage_k']}) at {best['spearman']:.4f} Spearman, "
+                  f"{best['vs_baseline']:+.4f} vs baseline.")
+            print("\n  CAUTION: this grid was searched on the same held-out season it")
+            print("  is scored on, so the top row is optimistic. Prefer a profile that")
+            print("  is strong across several shrinkage values, and re-test on a")
+            print("  different target season before adopting it in config/model.yaml.")
+
+    if args.output:
+        table.to_csv(args.output, index=False)
+        comparison.to_csv(str(args.output).replace(".csv", "_players.csv"))
+        print(f"\nWrote {args.output}")
+    return 0
+
+
+def cmd_data_help(args) -> int:
+    """Print exactly where to get data and what format it needs."""
+    _print_header("HOW TO GET DATA INTO THIS PIPELINE")
+    print(DATA_HELP)
+    return 0
+
+
 def cmd_verify_league(args) -> int:
     """Diff config/league.yaml against the real Sleeper league settings."""
     from src.ingestion.sleeper_source import SleeperSource, diff_scoring
@@ -368,7 +621,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.set_defaults(func=cmd_ingest)
 
     demo = sub.add_parser("demo", help="run the full pipeline on synthetic data (no network)")
-    demo.add_argument("--season", default="2025-26")
+    demo.add_argument("--seasons", nargs="*", help="default: three seasons, so backtest runs")
     demo.add_argument("--players", type=int, default=180)
     demo.add_argument("--verbose", action="store_true")
     demo.set_defaults(func=cmd_demo)
@@ -397,6 +650,18 @@ def build_parser() -> argparse.ArgumentParser:
     avail.add_argument("--top", type=int, default=40)
     avail.add_argument("--simulations", type=int, default=1000)
     avail.set_defaults(func=cmd_availability)
+
+    back = sub.add_parser("backtest", help="validate the model against naive baselines")
+    back.add_argument("--seasons", nargs="*")
+    back.add_argument("--players", help="player metadata CSV")
+    back.add_argument("--target-season", help="season to predict (default: latest)")
+    back.add_argument("--lockin-season", help="restrict the Lock-In backtest to one season")
+    back.add_argument("--output", help="write metrics to this CSV")
+    back.add_argument("--tune", action="store_true",
+                      help="grid-search projection weights (handoff sec.6)")
+    back.set_defaults(func=cmd_backtest)
+
+    sub.add_parser("data-help", help="where to get data and what format it needs").set_defaults(func=cmd_data_help)
 
     verify = sub.add_parser("verify-league", help="diff config/league.yaml against Sleeper (needs network)")
     verify.add_argument("--league-id")

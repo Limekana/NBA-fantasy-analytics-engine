@@ -29,6 +29,8 @@ import numpy as np
 
 from src.lockin.strategies import (
     OptimalIIDStrategy,
+    SecretaryStrategy,
+    simulate_secretary_week,
     PercentileStrategy,
     PlayerContext,
     Strategy,
@@ -40,6 +42,7 @@ from src.lockin.strategies import (
 # Strategies that are computed structurally rather than by consulting a decider.
 PERFECT = "perfect"
 LAST_GAME = "last_game"
+SECRETARY = "secretary"
 
 
 @dataclass(frozen=True)
@@ -202,6 +205,9 @@ class LockInSimulator:
         ``simulate_week`` remains the reference implementation, and
         ``test_vectorised_lockin_matches_scalar`` pins the two together.
         """
+        if strategy_name == SECRETARY:
+            return self._simulate_secretary(sample, games, n_weeks)
+
         thresholds = self._threshold_vector(sample, games, strategy_name)
         if thresholds is None:
             # Strategy is not threshold-shaped; fall back to the explicit loop.
@@ -219,6 +225,16 @@ class LockInSimulator:
         chosen = draws[np.arange(n_weeks), first_lock]
         fallback = self._fallback_values(draws)
         return float(np.where(locked_any, chosen, fallback).mean())
+
+    def _simulate_secretary(self, sample: np.ndarray, games: int, n_weeks: int) -> float:
+        """Expected weekly value under the 37% rule (history-dependent)."""
+        strategy = self.strategies.get(SECRETARY)
+        fraction = getattr(strategy, "exploration_fraction", 1.0 / np.e)
+        draws = self.rng.choice(sample, size=(n_weeks, games), replace=True)
+        total = 0.0
+        for week in draws:
+            total += simulate_secretary_week(week, fraction, self.auto_lock)
+        return total / n_weeks
 
     def _threshold_vector(self, sample: np.ndarray, games: int, strategy_name: str) -> np.ndarray | None:
         """Lock threshold for each decision game, or None if not threshold-shaped."""

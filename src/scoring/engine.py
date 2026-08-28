@@ -30,6 +30,7 @@ BONUS_TRIPLE_DOUBLE = "triple_double"
 BONUS_POINTS_40 = "points_40_plus"
 BONUS_POINTS_50 = "points_50_plus"
 BONUS_ASSISTS_15 = "assists_15_plus"
+BONUS_REBOUNDS_20 = "rebounds_20_plus"
 
 # Threshold bonuses expressed as (config key, stat name, threshold).
 # Declaring them as data keeps `points_thresholds_stack` a single decision point.
@@ -37,6 +38,7 @@ _THRESHOLD_BONUSES: tuple[tuple[str, str, int], ...] = (
     (BONUS_POINTS_40, "points", 40),
     (BONUS_POINTS_50, "points", 50),
     (BONUS_ASSISTS_15, "assists", 15),
+    (BONUS_REBOUNDS_20, "rebounds", 20),
 )
 
 # Threshold bonuses that overlap on the same stat, ordered low -> high. When

@@ -8,10 +8,12 @@ The engine makes each interaction a config switch. These tests pin down BOTH
 branches of every switch, so that flipping a value in league.yaml after checking
 the real Sleeper UI produces a predictable, already-tested result.
 
-Bonus values under the provisional config:
-    double_double   +2      points_40_plus  +3
-    triple_double   +3      points_50_plus  +4
-                            assists_15_plus +3
+Bonus values under the current config (50+/15ast/20reb confirmed by the
+commissioner 2026-08-28):
+    double_double   +2      points_40_plus   +3
+    triple_double   +3      points_50_plus   +4
+                            assists_15_plus  +3
+                            rebounds_20_plus +3
 """
 from __future__ import annotations
 
@@ -104,6 +106,40 @@ def test_assist_bonus_is_unaffected_by_point_stacking_switch(no_stack):
 
 
 # =========================================================================
+# Rebound threshold
+# =========================================================================
+
+def test_19_rebounds_gets_no_rebound_bonus(engine):
+    assert bonus_only(engine, rebounds=19, points=5) == 0.0
+
+
+def test_20_rebounds_exactly_gets_rebound_bonus(engine):
+    """20 reb alone is one category at 10+, so no double-double."""
+    assert bonus_only(engine, rebounds=20, points=5) == pytest.approx(3.0)
+
+
+def test_21_rebounds_gets_rebound_bonus(engine):
+    assert bonus_only(engine, rebounds=21, points=5) == pytest.approx(3.0)
+
+
+def test_20_rebounds_with_a_double_double_stacks(engine):
+    """20 reb + 10 ast: DD(2) + 20reb(3) = 5."""
+    assert bonus_only(engine, rebounds=20, assists=10, points=5) == pytest.approx(5.0)
+
+
+def test_rebound_bonus_is_unaffected_by_point_stacking_switch(no_stack):
+    """points_thresholds_stack must not leak into the rebounds tier."""
+    assert bonus_only(no_stack, rebounds=20, points=5) == pytest.approx(3.0)
+
+
+def test_20_rebound_double_double_is_a_big_line(engine):
+    """A 20/10 night: DD(2) + 20reb(3) = 5 bonus on top of 30 base."""
+    breakdown = engine.score_game_detailed(stat_line(points=10, rebounds=20))
+    assert breakdown.base == pytest.approx(25.0)
+    assert breakdown.bonus_total == pytest.approx(5.0)
+
+
+# =========================================================================
 # Double-double / triple-double
 # =========================================================================
 
@@ -181,10 +217,20 @@ def test_15_assist_triple_double_collects_dd_td_and_assist_bonus(engine):
 
 
 def test_the_maximal_line_collects_all_five_bonuses(engine):
-    """50 pts, 15 ast, 10 reb: TD(3)+DD(2)+40(3)+50(4)+15ast(3) = 15."""
+    """50 pts, 15 ast, 10 reb: TD(3)+DD(2)+40(3)+50(4)+15ast(3) = 15.
+
+    10 rebounds does not reach the 20-rebound tier, so that bonus stays off.
+    """
     breakdown = engine.score_game_detailed(stat_line(points=50, rebounds=10, assists=15))
     assert breakdown.bonus_total == pytest.approx(15.0)
     assert len(breakdown.bonuses_awarded) == 5
+
+
+def test_every_bonus_at_once(engine):
+    """50 pts, 20 reb, 15 ast: TD(3)+DD(2)+40(3)+50(4)+15ast(3)+20reb(3) = 18."""
+    breakdown = engine.score_game_detailed(stat_line(points=50, rebounds=20, assists=15))
+    assert breakdown.bonus_total == pytest.approx(18.0)
+    assert len(breakdown.bonuses_awarded) == 6
 
 
 def test_maximal_line_with_all_stacking_off(no_stack):
@@ -218,6 +264,9 @@ def test_negative_stats_never_trigger_bonuses(engine):
         {"points": 50, "rebounds": 10, "assists": 15},
         {"steals": 10, "blocks": 10, "points": 4},
         {"points": 10, "rebounds": 10, "assists": 10, "blocks": 10},
+        {"rebounds": 19, "points": 5}, {"rebounds": 20, "points": 5},
+        {"rebounds": 20, "assists": 10, "points": 5},
+        {"points": 50, "rebounds": 20, "assists": 15},
     ],
 )
 @pytest.mark.parametrize("stacking", [True, False])

@@ -35,6 +35,7 @@ DISPLAY_COLUMNS = [
     ("40_point_rate", "40+%", "pct"),
     ("50_point_rate", "50+%", "pct"),
     ("15_assist_rate", "15A%", "pct"),
+    ("20_rebound_rate", "20R%", "pct"),
     ("adp", "ADP", "num"),
     ("adp_vs_model", "Gap", "num"),
     ("value_flag", "Market", "text"),

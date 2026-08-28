@@ -258,3 +258,51 @@ def test_assistant_handles_an_exhausted_board(cfg):
     assistant = DraftAssistant(board, cfg.league, cfg.model)
     package = assistant.recommend(my_slot=1, current_pick=1, drafted_names=["Only Player"])
     assert "error" in package
+
+
+# =========================================================================
+# Tiering must survive bad data and must not lump the board together
+# =========================================================================
+
+def test_tiers_do_not_collapse_on_a_nan_value(cfg):
+    """A single NaN once made the global threshold NaN, silently putting every
+    player in one tier. It must warn and still produce real tiers."""
+    rows = [
+        {"player_id": f"P{i}", "player_name": f"P{i}", "team": "BOS", "position": "PG",
+         "projected_season_value": float(1000 - i * 10)}
+        for i in range(40)
+    ]
+    rows[20]["projected_season_value"] = float("nan")
+    frame = pd.DataFrame(rows)
+
+    with pytest.warns(RuntimeWarning, match="non-finite"):
+        tiered = assign_tiers(frame, cfg.model)
+    assert tiered["tier"].nunique() > 1
+
+
+def test_tiers_do_not_lump_the_long_tail_into_one_bucket(cfg):
+    """Draft value decays steeply then flattens. A global gap threshold cut a few
+    tiers at the top and dumped everything else together; local scaling fixes it."""
+    values = [1000, 900, 820] + [600 - i * 3 for i in range(120)]
+    frame = pd.DataFrame([
+        {"player_id": f"P{i}", "player_name": f"P{i}", "team": "BOS",
+         "position": "PG", "projected_season_value": float(v)}
+        for i, v in enumerate(values)
+    ])
+    tiered = assign_tiers(frame, cfg.model)
+    sizes = tiered["tier"].value_counts()
+    assert tiered["tier"].nunique() >= 5
+    # No tier may hold more than half the board.
+    assert sizes.max() < len(frame) * 0.5
+
+
+def test_tiers_find_a_real_cliff(cfg):
+    """A deliberate 200-point cliff after the 6th player must start a new tier."""
+    values = [500 - i * 4 for i in range(6)] + [270 - i * 4 for i in range(30)]
+    frame = pd.DataFrame([
+        {"player_id": f"P{i}", "player_name": f"P{i}", "team": "BOS",
+         "position": "PG", "projected_season_value": float(v)}
+        for i, v in enumerate(values)
+    ])
+    tiered = assign_tiers(frame, cfg.model)
+    assert tiered["tier"].iloc[5] != tiered["tier"].iloc[6]

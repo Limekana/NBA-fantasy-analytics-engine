@@ -78,6 +78,7 @@ bonuses:
   points_40_plus: 3
   points_50_plus: 4
   assists_15_plus: 3
+  rebounds_20_plus: 3
 
 # -----------------------------------------------------------------------------
 # BONUS RULES - the ambiguity the handoff (sec.4) explicitly warned about
@@ -98,12 +99,13 @@ bonus_rules:
   triple_double_stacks_with_double_double: true
 
   # Does a 50-point game ALSO collect the 40+ bonus?
-  # >>> UNVERIFIED ASSUMPTION <<<  (default: true)
-  # Rationale: Sleeper's documented general principle is that scoring settings
-  # stack, and 40+/50+ are separate independent threshold settings. Could NOT be
-  # confirmed against support.sleeper.com from the build environment.
-  # ACTION REQUIRED: score one known 50-point game in your league's Sleeper UI
-  # and compare with `python -m src.cli scoring-check`. Flip to false if needed.
+  # >>> STILL UNVERIFIED <<<  (default: true)
+  # Confirmed by the commissioner 2026-08-28: 50+ pays 4, 15+ ast pays 3,
+  # 20+ reb pays 3 - these are separate, independently-listed settings, which is
+  # consistent with (but does not prove) the tiers stacking. The 40+ tier at 3
+  # points is carried over from the original handoff.
+  # ACTION: score one known 50-point game in the Sleeper UI and compare with
+  # `python -m src.cli scoring-check`. Flip to false if they disagree.
   points_thresholds_stack: true
 
   # Does a quadruple-double pay the triple-double bonus (no separate quad setting)?

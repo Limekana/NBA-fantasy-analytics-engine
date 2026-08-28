@@ -24,6 +24,7 @@ BONUS_COLUMNS = {
     "40_point_rate": "bonus_points_40_plus",
     "50_point_rate": "bonus_points_50_plus",
     "15_assist_rate": "bonus_assists_15_plus",
+    "20_rebound_rate": "bonus_rebounds_20_plus",
 }
 
 

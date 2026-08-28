@@ -48,6 +48,7 @@ BONUS_RATE_TO_KEY = {
     "40_point_rate": "points_40_plus",
     "50_point_rate": "points_50_plus",
     "15_assist_rate": "assists_15_plus",
+    "20_rebound_rate": "rebounds_20_plus",
 }
 
 
@@ -179,6 +180,7 @@ def project_bonus_points(
         "40_point_rate": "points",
         "50_point_rate": "points",
         "15_assist_rate": "assists",
+        "20_rebound_rate": "rebounds",
     }
     aggregate_ratio = _production_ratio(profile, projected_stats)
 

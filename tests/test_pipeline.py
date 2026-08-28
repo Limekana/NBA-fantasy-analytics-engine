@@ -382,3 +382,34 @@ def test_pipeline_warns_when_no_adp_is_loaded(cfg, tmp_path, synthetic):
     logs.to_csv(directory / "logs.csv", index=False)
     result = run_pipeline(cfg, ["2025-26"], raw_root=tmp_path, players=players)
     assert any("ADP" in w for w in result.warnings)
+
+
+# =========================================================================
+# A season directory often holds files that are not game logs
+# =========================================================================
+
+def test_non_game_log_csv_in_the_season_directory_is_ignored(tmp_path, synthetic):
+    """Player metadata or a schedule sitting in data/raw/<season>/ once got loaded
+    as game logs, producing statless rows whose NaN silently broke tiering."""
+    players, logs = synthetic
+    directory = tmp_path / "2025-26"
+    directory.mkdir(parents=True)
+    logs.to_csv(directory / "game_logs.csv", index=False)
+    # A metadata file with no box-score columns.
+    players[["player_id", "player_name", "team", "position", "age"]].to_csv(
+        directory / "players.csv", index=False
+    )
+
+    loaded = CSVSource(tmp_path).fetch_game_logs("2025-26")
+    assert len(loaded) == len(logs)
+    assert loaded["points"].notna().all()
+
+
+def test_directory_with_no_usable_game_logs_raises_clearly(tmp_path, synthetic):
+    players, _logs = synthetic
+    directory = tmp_path / "2025-26"
+    directory.mkdir(parents=True)
+    players[["player_id", "player_name", "team"]].to_csv(directory / "players.csv", index=False)
+
+    with pytest.raises(FileNotFoundError, match="No usable game-log files"):
+        CSVSource(tmp_path).fetch_game_logs("2025-26")

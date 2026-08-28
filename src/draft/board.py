@@ -25,12 +25,23 @@ VALUE_COLUMN = "projected_season_value"
 
 
 def assign_tiers(board: pd.DataFrame, model_cfg: Mapping, value_column: str = VALUE_COLUMN) -> pd.DataFrame:
-    """Cut tiers where the value drop is unusually large.
+    """Cut tiers where the value drop is large *relative to its neighbourhood*.
 
-    A new tier starts when the gap to the next player exceeds
-    ``gap_sd_multiple`` standard deviations of the local gap distribution, so the
-    cut points come from the shape of this year's player pool rather than a
-    number someone picked in advance.
+    Handoff sec.16: a tier must represent a meaningful range where players have
+    similar expected value, and must not be arbitrary.
+
+    The subtlety is that "a big gap" is not an absolute quantity. Draft value
+    decays steeply at the top and flattens out, so a 5-point gap is noise between
+    the 3rd and 4th players and a cliff between the 100th and 101st. Comparing
+    every gap against one global threshold - the obvious implementation - cuts a
+    few tiers at the top and then dumps the entire rest of the pool into one
+    meaningless bucket.
+
+    So each gap is judged against the *local* scale: the median gap in a window
+    around it. A break is cut where a gap is several times its neighbourhood's
+    typical gap, which finds the real cliffs wherever they sit on the curve.
+    ``max_tier_size`` is a backstop so no tier can swallow the board even if the
+    curve is perfectly smooth.
     """
     if board.empty:
         out = board.copy()
@@ -41,6 +52,8 @@ def assign_tiers(board: pd.DataFrame, model_cfg: Mapping, value_column: str = VA
     gap_multiple = float(tier_cfg.get("gap_sd_multiple", 1.0))
     min_size = int(tier_cfg.get("min_tier_size", 3))
     max_tiers = int(tier_cfg.get("max_tiers", 12))
+    max_size = int(tier_cfg.get("max_tier_size", 0)) or None
+    window = int(tier_cfg.get("local_window", 15))
 
     out = board.sort_values(value_column, ascending=False).reset_index(drop=True)
     values = out[value_column].to_numpy(dtype=float)
@@ -49,19 +62,70 @@ def assign_tiers(board: pd.DataFrame, model_cfg: Mapping, value_column: str = VA
         return out
 
     gaps = -np.diff(values)                      # positive: value falls as rank grows
-    threshold = float(np.mean(gaps) + gap_multiple * np.std(gaps))
+    # A single NaN would make a global threshold NaN and every comparison False,
+    # silently collapsing the board into one tier. Handle it explicitly.
+    finite = np.isfinite(gaps)
+    if not finite.any():
+        out["tier"] = "A"
+        return out
+    if not finite.all():
+        import warnings as _warnings
+
+        _warnings.warn(
+            f"assign_tiers: {int((~finite).sum())} non-finite value(s) in "
+            f"{value_column}; those positions cannot start a tier.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    local_scale = _local_gap_scale(gaps, finite, window)
+
+    if max_size is None:
+        # Aim for roughly `max_tiers` tiers rather than letting one run forever.
+        max_size = max(min_size * 2, int(np.ceil(len(values) / max(max_tiers, 1))) * 2)
 
     tiers: list[int] = []
     current, size = 0, 0
     for index in range(len(values)):
         tiers.append(current)
         size += 1
-        if index < len(gaps) and gaps[index] > threshold and size >= min_size and current + 1 < max_tiers:
+        if current + 1 >= max_tiers or index >= len(gaps):
+            continue
+
+        gap = gaps[index]
+        scale = local_scale[index]
+        is_cliff = bool(finite[index] and scale > 0 and gap > gap_multiple * scale)
+        forced = size >= max_size and np.isfinite(gap)
+
+        if (is_cliff and size >= min_size) or forced:
             current += 1
             size = 0
 
     out["tier"] = [_tier_label(t) for t in tiers]
     return out
+
+
+def _local_gap_scale(gaps: np.ndarray, finite: np.ndarray, window: int) -> np.ndarray:
+    """Median gap in a window around each position - the local sense of 'normal'.
+
+    Using the median rather than the mean keeps one cliff from inflating the
+    scale of its own neighbourhood and hiding the cliffs next to it.
+    """
+    n = len(gaps)
+    scale = np.zeros(n, dtype=float)
+    half = max(window // 2, 1)
+    for index in range(n):
+        low = max(0, index - half)
+        high = min(n, index + half + 1)
+        neighbourhood = gaps[low:high][finite[low:high]]
+        # Exclude the gap being judged, so a cliff is compared against its
+        # surroundings rather than partly against itself.
+        if neighbourhood.size > 1:
+            others = np.concatenate([gaps[low:index][finite[low:index]], gaps[index + 1:high][finite[index + 1:high]]])
+            scale[index] = float(np.median(others)) if others.size else float(np.median(neighbourhood))
+        elif neighbourhood.size == 1:
+            scale[index] = float(neighbourhood[0])
+    return scale
 
 
 def _tier_label(index: int) -> str:
@@ -174,7 +238,7 @@ def build_draft_board(
         "projected_fp_game", "projected_games", "projected_season_value",
         "median_fp", "floor", "ceiling", "std_dev",
         "double_double_rate", "triple_double_rate", "40_point_rate",
-        "50_point_rate", "15_assist_rate",
+        "50_point_rate", "15_assist_rate", "20_rebound_rate",
         "lockin_value", "lock_in_advantage", "games_per_week",
         "adp", "adp_vs_model", "value_flag", "risk", "vor", "positional_scarcity",
         "archetype",

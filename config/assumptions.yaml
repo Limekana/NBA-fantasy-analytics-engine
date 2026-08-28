@@ -40,16 +40,165 @@ role_uncertainty: {}
 # Players to exclude entirely (retired, overseas, two-way not expected to stick).
 exclude: []
 
-# Rookies: no NBA game logs exist, so they must be projected from an external
-# prior. Provide a per-36 line or they are dropped from the board with a warning.
-# ASSUMPTION - sourced from your own research; document it.
-rookies: {}
-  # "Rookie Name":
-  #   team: "TEAM"
-  #   position: "PG"
-  #   age: 19
-  #   minutes: 26.0
-  #   per36: {points: 18.0, rebounds: 4.0, assists: 5.5, steals: 1.2,
-  #           blocks: 0.4, turnovers: 2.8, personal_fouls: 2.2,
-  #           free_throws_made: 3.5, three_pointers_made: 2.0}
-  #   note: "Consensus summer-league-adjusted projection, 2026-08-28."
+# =============================================================================
+# ROOKIES - 2026 NBA draft class
+# =============================================================================
+# EVERY NUMBER BELOW IS AN ASSUMPTION. Rookies have no NBA game logs, so nothing
+# here is measured - it is a prior built from college production, summer league,
+# reported role, and draft position. Researched 2026-08-28.
+#
+# HOW THE PER-36 LINES WERE BUILT (so you can disagree with the method, not just
+# the numbers):
+#   1. Convert college per-game production to per-36.
+#   2. Apply a rookie translation discount. Scoring efficiency drops hardest
+#      (~60-70% retention for a top pick); rebounds and steals translate best
+#      (~80-90%); assists sit in between and turnovers RISE.
+#   3. Sanity-check against summer league where it exists - noting that summer
+#      league inflates usage and deflates opponent quality, so it is a ceiling
+#      indicator, not a projection.
+#   4. Set minutes from the reported depth chart, not from talent.
+#
+# `confidence` drives BOTH game-to-game variance and role uncertainty:
+#   high   = landing spot and role confirmed by multiple sources
+#   medium = landing spot confirmed, role reported but not settled
+#   low    = single source, or a source that may have been a MOCK draft.
+#            VERIFY THESE YOURSELF before drafting them.
+#
+# In Lock-In, rookie volatility is not purely a cost - the week keeps their best
+# game and discards the bust. Their risk is that the MINUTES never arrive, which
+# is tracked separately as role_uncertainty. See src/projections/rookies.py.
+# =============================================================================
+rookies:
+
+  # --- Tier R1: confirmed top-4 picks, immediate starting role -------------
+  "AJ Dybantsa":
+    team: "WAS"
+    position: "SF"
+    age: 19
+    draft_pick: 1
+    minutes: 30.0
+    confidence: high
+    expected_games: 72
+    per36: {points: 19.5, rebounds: 5.6, assists: 3.2, steals: 1.1,
+            blocks: 0.6, turnovers: 2.9, personal_fouls: 2.4,
+            free_throws_made: 4.2, three_pointers_made: 2.0}
+    note: >
+      No.1 overall to Washington. 6'9" wing, 25.5 pts / 6.8 reb at BYU.
+      Reported as competing for a starting role and likely to receive the bulk of
+      scoring and playmaking opportunities. TEMPERING FACTOR: shares a floor with
+      Anthony Davis and Trae Young, so usage is capped well below a true
+      rebuild-tanking role. ROY co-favourite.
+
+  "Darryn Peterson":
+    team: "UTA"
+    position: "SG"
+    age: 19
+    draft_pick: 2
+    minutes: 29.0
+    confidence: high
+    expected_games: 66
+    per36: {points: 19.8, rebounds: 3.4, assists: 4.6, steals: 1.3,
+            blocks: 0.3, turnovers: 2.8, personal_fouls: 2.1,
+            free_throws_made: 4.0, three_pointers_made: 2.3}
+    note: >
+      No.2 overall to Utah. 20.2 PPG and 38.2% from three at Kansas; 20.7 pts /
+      4.0 ast across five summer-league games. Utah offers real usage. RISK:
+      missed time at Kansas with injury, which is why expected_games is set
+      below the others in this tier.
+
+  "Cameron Boozer":
+    team: "MEM"
+    position: "PF"
+    age: 19
+    draft_pick: 3
+    minutes: 29.0
+    confidence: high
+    expected_games: 74
+    per36: {points: 16.8, rebounds: 9.4, assists: 3.3, steals: 1.5,
+            blocks: 0.8, turnovers: 2.4, personal_fouls: 2.6,
+            free_throws_made: 3.4, three_pointers_made: 0.9}
+    note: >
+      No.3 overall to Memphis. 22.0 / 10.3 / 4.1 with 1.4 steals and .559 FG at
+      Duke; 18.7 / 7.0 / 3.3 with 2.3 steals in summer league. Opening ROY
+      betting favourite. HIGHEST FLOOR of the class for this scoring system - the
+      rebounding gets him double-doubles, and the 20-rebound bonus is live for
+      him in a way it is not for the wings.
+
+  "Caleb Wilson":
+    team: "CHI"
+    position: "PF"
+    age: 19
+    draft_pick: 4
+    minutes: 26.0
+    confidence: medium
+    expected_games: 68
+    per36: {points: 15.2, rebounds: 8.2, assists: 2.4, steals: 1.2,
+            blocks: 1.1, turnovers: 2.5, personal_fouls: 2.8,
+            free_throws_made: 3.2, three_pointers_made: 0.8}
+    note: >
+      No.4 overall to Chicago (confirmed by NBA.com and ESPN). North Carolina
+      forward. Chicago also drafted Dailyn Swain, so frontcourt minutes are not
+      guaranteed. Missed time at UNC with a fractured hand - monitor.
+
+  # --- Tier R3: landing spots NOT reliably confirmed -----------------------
+  # WARNING: the sources for the entries below were single-source, and at least
+  # one was explicitly a MOCK draft rather than results. Team assignments here
+  # may be WRONG, which would also make their schedule-based Lock-In value wrong.
+  # Confirm each on nba.com or Basketball Reference, fix the team, then re-run.
+  # Until then they carry low confidence and wide uncertainty.
+
+  "Darius Acuff Jr.":
+    team: "SAC"
+    position: "PG"
+    age: 19
+    draft_pick: 7
+    minutes: 24.0
+    confidence: low
+    expected_games: 66
+    per36: {points: 17.4, rebounds: 3.0, assists: 5.4, steals: 1.3,
+            blocks: 0.2, turnovers: 3.1, personal_fouls: 2.2,
+            free_throws_made: 3.6, three_pointers_made: 2.0}
+    note: >
+      Arkansas lead guard. VERIFY LANDING SPOT - the Kings-at-7 report traced
+      back to a MOCK draft headline, not confirmed results.
+
+  "Nate Ament":
+    team: "MIL"
+    position: "SF"
+    age: 19
+    draft_pick: 8
+    minutes: 23.0
+    confidence: low
+    expected_games: 66
+    per36: {points: 15.8, rebounds: 5.4, assists: 2.0, steals: 1.0,
+            blocks: 0.9, turnovers: 2.4, personal_fouls: 2.3,
+            free_throws_made: 3.0, three_pointers_made: 1.9}
+    note: "Tennessee wing. VERIFY LANDING SPOT - single source."
+
+  "Mikel Brown Jr.":
+    team: "BKN"
+    position: "PG"
+    age: 19
+    draft_pick: 9
+    minutes: 24.0
+    confidence: low
+    expected_games: 68
+    per36: {points: 16.2, rebounds: 3.2, assists: 5.8, steals: 1.2,
+            blocks: 0.2, turnovers: 3.0, personal_fouls: 2.1,
+            free_throws_made: 3.2, three_pointers_made: 2.1}
+    note: >
+      Louisville guard. VERIFY LANDING SPOT - single source. Brooklyn would offer
+      unusually open usage if correct.
+
+  "Kingston Flemings":
+    team: "ATL"
+    position: "PG"
+    age: 19
+    draft_pick: 12
+    minutes: 21.0
+    confidence: low
+    expected_games: 64
+    per36: {points: 15.0, rebounds: 3.0, assists: 5.0, steals: 1.2,
+            blocks: 0.2, turnovers: 3.0, personal_fouls: 2.2,
+            free_throws_made: 3.0, three_pointers_made: 1.7}
+    note: "VERIFY LANDING SPOT - single source. Atlanta backcourt is crowded."

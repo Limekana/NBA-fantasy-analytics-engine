@@ -21,6 +21,7 @@ from src.distributions import assign_archetypes, build_profiles, profiles_to_fra
 from src.draft import build_draft_board
 from src.ingestion.csv_source import CSVSource
 from src.projections import compute_per36, project_games_played, project_players
+from src.projections.rookies import build_rookie_projections, rookie_availability
 from src.schedule import games_per_week_by_team
 from src.scoring import ScoringEngine
 from src.valuation import build_valuations, valuations_to_frame
@@ -101,19 +102,45 @@ def run_pipeline(
     if not projections:
         warnings.append("No projections produced - check that player metadata joins to the logs.")
 
+    # --- rookies: no game logs exist, so they enter as explicit priors ---
+    rookie_projections, rookie_profiles = build_rookie_projections(
+        cfg.assumptions, cfg.model, engine
+    )
+    if rookie_projections:
+        projections = list(projections) + rookie_projections
+        profiles = list(profiles) + rookie_profiles
+        warnings.append(
+            f"ASSUMPTION: {len(rookie_projections)} rookies projected from priors in "
+            "config/assumptions.yaml, not from NBA data. Verify their roles and "
+            "landing spots before drafting them."
+        )
+        low_confidence = [
+            p.player_name for p in rookie_projections if "VERIFY" in p.assumption_notes
+        ]
+        if low_confidence:
+            warnings.append(
+                "VERIFY LANDING SPOTS - these rookies came from single or unconfirmed "
+                f"sources and their team may be wrong: {', '.join(low_confidence)}"
+            )
+
     season_length = int(cfg.model.get("games_played", {}).get("season_length", 82))
     availability_history = _availability_history(logs, seasons, season_length)
     injuries = cfg.assumptions.get("injuries") or {}
-    games_projections = {
-        p.player_id: project_games_played(
-            p.player_id,
-            p.age,
-            availability_history.get(p.player_id, []),
+    rookie_entries = cfg.assumptions.get("rookies") or {}
+    games_projections = {}
+    for projection in projections:
+        history = availability_history.get(projection.player_id, [])
+        if not history and projection.player_name in rookie_entries:
+            # A rookie has no history at all; use the explicit rookie prior rather
+            # than letting the age baseline invent one.
+            history = [rookie_availability(rookie_entries[projection.player_name], season_length)]
+        games_projections[projection.player_id] = project_games_played(
+            projection.player_id,
+            projection.age,
+            history,
             cfg.model,
-            injuries.get(p.player_name),
+            injuries.get(projection.player_name),
         )
-        for p in projections
-    }
 
     # --- schedule ---
     if schedule is not None and not schedule.empty:

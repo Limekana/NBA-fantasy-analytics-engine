@@ -18,6 +18,7 @@ generator's artefacts. It is still fiction.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -174,6 +175,27 @@ def generate_game_logs(
     return pd.DataFrame(records)
 
 
+def _true_age_multiplier(age: float) -> float:
+    """The generator's GROUND-TRUTH aging curve.
+
+    Kept intentionally distinct from config/model.yaml's age_curve so the
+    projection backtest measures whether the model approximates a real effect
+    rather than whether it can recite one it was handed.
+    """
+    age = float(age)
+    if age < 23:
+        return 1.045          # young players improve quickly
+    if age < 26:
+        return 1.020
+    if age < 29:
+        return 1.000          # peak
+    if age < 32:
+        return 0.975
+    if age < 35:
+        return 0.945
+    return 0.900              # steep late decline
+
+
 def _sample_played_games(n_games: int, n_played: int, rng: np.random.Generator) -> list[int]:
     """Choose which games a player appears in, with injuries as contiguous blocks."""
     if n_played >= n_games:
@@ -201,17 +223,92 @@ def _draw(rng: np.random.Generator, mean: float, noise: float, skew: float = 1.0
     return int(round(float(rng.gamma(shape, scale))))
 
 
-def write_synthetic_season(
-    output_dir, season: str = "2025-26", n_players: int = 180, seed: int = 20262027
+def generate_multi_season(
+    players: pd.DataFrame,
+    seasons: Sequence[str] = ("2023-24", "2024-25", "2025-26"),
+    seed: int = 20262027,
+    year_over_year_drift: float = 0.12,
 ):
-    """Write a synthetic season to disk in the raw-data layout."""
+    """Generate several seasons with players who genuinely change year to year.
+
+    Backtesting is only meaningful if the target season is not a copy of the
+    training seasons. Each season the underlying talent and minutes drift, so a
+    projection has something real to get right or wrong - and a model that merely
+    memorises last season cannot score perfectly.
+    """
+    rng = np.random.default_rng(seed + 7717)
+    frames = []
+    current = players.copy()
+    start_years = {season: int(season.split("-")[0]) for season in seasons}
+
+    for index, season in enumerate(sorted(seasons)):
+        frames.append(
+            generate_game_logs(
+                current,
+                season=season,
+                season_start=f"{start_years[season]}-10-21",
+                seed=seed + index * 101,
+            )
+        )
+        # Drift into the next season. Two components:
+        #
+        #  (a) a REAL aging effect, so there is a genuine signal for a projection
+        #      to capture. Without it, year-over-year change would be pure noise
+        #      and NO method could beat a "same as last season" baseline - which
+        #      would make the projection backtest structurally unable to
+        #      discriminate between a good model and a broken one.
+        #
+        #  (b) idiosyncratic noise, so the signal is not trivially recoverable.
+        #
+        # The curve below is deliberately a DIFFERENT shape from the age curve in
+        # config/model.yaml (steeper, with a later peak). The model must
+        # approximate a real effect it does not know exactly - if the generator
+        # used the model's own curve, the backtest would be marking its own
+        # homework.
+        nxt = current.copy()
+        age_effect = np.array([_true_age_multiplier(a) for a in current["age"]], dtype=float)
+        nxt["talent"] = np.clip(
+            current["talent"] * age_effect * rng.normal(1.0, year_over_year_drift, len(current)),
+            0.5, 2.4,
+        )
+        nxt["base_minutes"] = np.clip(
+            current["base_minutes"] * age_effect + rng.normal(0.0, 2.5, len(current)), 8.0, 38.0
+        )
+        nxt["durability"] = np.clip(
+            current["durability"] * (0.5 + 0.5 * age_effect) * rng.normal(1.0, 0.08, len(current)),
+            0.4, 0.99,
+        )
+        nxt["age"] = current["age"] + 1
+        current = nxt
+
+    return pd.concat(frames, ignore_index=True)
+
+
+def write_synthetic_season(
+    output_dir,
+    season: str = "2025-26",
+    n_players: int = 180,
+    seed: int = 20262027,
+    seasons: Sequence[str] | None = None,
+):
+    """Write one or more synthetic seasons to disk in the raw-data layout."""
     from pathlib import Path
 
-    directory = Path(output_dir) / season
-    directory.mkdir(parents=True, exist_ok=True)
     players = generate_players(n_players=n_players, seed=seed)
-    logs = generate_game_logs(players, season=season, seed=seed)
-    path = directory / f"SYNTHETIC_game_logs_{season}.csv"
-    logs.to_csv(path, index=False)
-    players.to_csv(directory / f"SYNTHETIC_players_{season}.csv", index=False)
-    return path, players, logs
+    season_list = list(seasons) if seasons else [season]
+    logs = generate_multi_season(players, season_list, seed=seed)
+
+    written = []
+    for name in season_list:
+        directory = Path(output_dir) / name
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"SYNTHETIC_game_logs_{name}.csv"
+        logs[logs["season"] == name].to_csv(path, index=False)
+        written.append(path)
+
+    # Deliberately NOT inside a season directory: everything under
+    # data/raw/<season>/ is treated as game logs.
+    meta_dir = Path(output_dir).parent / "external"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    players.to_csv(meta_dir / "SYNTHETIC_players.csv", index=False)
+    return (written[-1] if written else None), players, logs

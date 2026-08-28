@@ -267,3 +267,66 @@ def test_vectorised_respects_auto_lock_fallback(cfg):
         else:
             # first/last game of an i.i.d. week are both unconditioned draws.
             assert value == pytest.approx(float(np.mean(sample)), abs=2.0)
+
+
+# =========================================================================
+# The 37% / secretary rule - a common suggestion, and the wrong tool here
+# =========================================================================
+
+def test_secretary_rule_applied_to_the_handoff_example():
+    """Week [34, 47, 39, 51]: observe floor(4/e)=1 game, then take the first
+    game beating 34. That is 47 - and it forfeits the 51 that came later."""
+    from src.lockin import simulate_secretary_week
+
+    assert simulate_secretary_week([34, 47, 39, 51]) == 47.0
+
+
+def test_secretary_rule_is_degenerate_in_a_two_game_week():
+    """floor(2/e) = 0, so there is no observation phase at all: it locks the
+    first game unconditionally, which is just an unconditioned draw."""
+    from src.lockin import simulate_secretary_week
+
+    assert simulate_secretary_week([10.0, 90.0]) == 10.0
+
+
+def test_secretary_rule_falls_through_to_auto_lock():
+    from src.lockin import simulate_secretary_week
+
+    # Nothing after the observation phase beats 90, so the auto-lock applies.
+    assert simulate_secretary_week([90.0, 10.0, 20.0, 30.0]) == 30.0
+
+
+@pytest.mark.parametrize("games", [2, 3, 4, 5])
+def test_secretary_rule_loses_to_optimal_stopping(sim, games):
+    """The 37% rule maximises P(picking the single best game).
+
+    Lock-In pays expected points, not a prize for picking the maximum, and the
+    player's distribution is known rather than hidden. Optimal stopping uses both
+    facts; the secretary rule discards them, and measurably loses.
+    """
+    sample = np.random.default_rng(101).normal(35, 12, 500)
+    optimal = sim._simulate_expected(sample, games, "optimal_iid", n_weeks=30000)
+    secretary = sim._simulate_expected(sample, games, "secretary", n_weeks=30000)
+    assert optimal > secretary
+
+
+def test_secretary_rule_captures_less_than_half_the_available_edge(sim):
+    """Quantifies the cost: the gap between never-locking and optimal is the
+    prize; the 37% rule collects under half of it."""
+    sample = np.random.default_rng(103).normal(35, 12, 500)
+    floor_value = sim.expected_weekly_value(sample, 4, "last_game")
+    optimal = sim._simulate_expected(sample, 4, "optimal_iid", n_weeks=30000)
+    secretary = sim._simulate_expected(sample, 4, "secretary", n_weeks=30000)
+
+    available = optimal - floor_value
+    captured = secretary - floor_value
+    assert 0.0 < captured < 0.6 * available
+
+
+def test_secretary_strategy_rejects_the_stateless_interface():
+    """It is history-dependent, so it must not silently pretend otherwise."""
+    from src.lockin import SecretaryStrategy
+
+    strategy = SecretaryStrategy()
+    with pytest.raises(NotImplementedError):
+        strategy.decide(40.0, 2, ctx_for([30.0, 40.0]))

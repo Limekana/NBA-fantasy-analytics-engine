@@ -20,6 +20,7 @@ presented as a projection:
     last_game    never decides; takes Sleeper's auto-lock.     LOWER BOUND
     threshold    lock at a fixed FP number.                    naive-realistic
     percentile   lock above the player's own p-th percentile.  self-calibrating
+    secretary    the classic 37% rule.                         WRONG PROBLEM (see below)
     optimal_iid  optimal stopping against the player's own     realistic
                  distribution, with no future knowledge.
 """
@@ -84,6 +85,82 @@ class PercentileStrategy:
 
 
 @dataclass(frozen=True)
+class SecretaryStrategy:
+    """The classic 37% rule - included to demonstrate that it is the wrong tool.
+
+    The secretary problem says: observe the first ~1/e (36.8%) of candidates
+    without choosing, then take the first one better than everything seen. That
+    rule is genuinely optimal, but for a *different objective* than ours:
+
+    ================  ==============================  ==========================
+                      Secretary problem               Lock-In week
+    ================  ==============================  ==========================
+    Objective         maximise P(picking the single   maximise EXPECTED POINTS
+                      best candidate)
+    Payoff            all-or-nothing; 2nd best        2nd-best game scores
+                      scores zero                     almost as much as the best
+    Distribution      unknown; only relative ranks    KNOWN - the player's own
+                      are observable                  game log
+    n                 large                           2 to 4
+    ================  ==============================  ==========================
+
+    All four differences push the same way, and the third is decisive: we are not
+    guessing in the dark. We know a given player's scoring distribution, so we can
+    compute the exact expected value of continuing rather than inferring it from
+    ranks. The 37% rule deliberately throws that information away.
+
+    The small ``n`` makes it worse still. With 3.4 games in a typical week,
+    ``floor(n/e)`` is 1 - so the rule says "watch Monday, then take the first game
+    that beats it", and if none does you are forced onto the auto-lock. With a
+    2-game week ``floor(2/e) = 0``, so it locks game one unconditionally.
+
+    ``OptimalIIDStrategy`` maximises expected points and beats this at every game
+    count; ``test_secretary_rule_loses_to_optimal_stopping`` measures the gap.
+    """
+
+    exploration_fraction: float = 1.0 / np.e   # the "37%"
+    name: str = "secretary"
+
+    def decide(self, score: float, games_remaining: int, ctx: PlayerContext) -> bool:
+        raise NotImplementedError(
+            "SecretaryStrategy is history-dependent and cannot be evaluated from "
+            "(score, games_remaining) alone - it needs the running maximum. Use "
+            "simulate_secretary_week()."
+        )
+
+
+def simulate_secretary_week(
+    scores: Sequence[float], exploration_fraction: float = 1.0 / np.e, auto_lock: str = "last_game"
+) -> float:
+    """Apply the 37% rule to one week and return the locked value.
+
+    Observe the first ``floor(n * fraction)`` games without locking, remember the
+    best of them, then lock the first subsequent game that beats it. If nothing
+    does, the league's auto-lock rule decides.
+    """
+    values = [float(s) for s in scores]
+    n = len(values)
+    if n == 0:
+        return 0.0
+    if n == 1:
+        return values[0]
+
+    cutoff = int(np.floor(n * exploration_fraction))
+    best_seen = max(values[:cutoff]) if cutoff > 0 else -np.inf
+
+    # The final game is never a decision - it is forced.
+    for index in range(cutoff, n - 1):
+        if values[index] > best_seen:
+            return values[index]
+
+    if auto_lock == "first_game":
+        return values[0]
+    if auto_lock == "best_game":
+        return max(values)
+    return values[-1]
+
+
+@dataclass(frozen=True)
 class OptimalIIDStrategy:
     """Optimal stopping against the player's own historical distribution.
 
@@ -140,4 +217,7 @@ def build_strategies(model_cfg: dict) -> dict[str, Strategy]:
         "threshold": ThresholdStrategy(threshold=float(lockin_cfg.get("threshold_fp", 40.0))),
         "percentile": PercentileStrategy(percentile=float(lockin_cfg.get("percentile", 70))),
         "optimal_iid": OptimalIIDStrategy(),
+        "secretary": SecretaryStrategy(
+            exploration_fraction=float(lockin_cfg.get("secretary_fraction", 1.0 / np.e))
+        ),
     }

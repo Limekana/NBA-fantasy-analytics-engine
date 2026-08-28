@@ -111,13 +111,16 @@ draft_simulation:
   random_deviation_rate: 0.20 # chance a manager ignores the board entirely
 
 tiers:
-  # Tiers are cut where the gap between consecutive players' projected season
-  # value exceeds `gap_sd_multiple` local standard deviations - not arbitrary
-  # fixed-size buckets (handoff sec.16).
+  # Tiers are cut at value CLIFFS, not at fixed intervals (handoff sec.16).
+  # Each gap is compared against the median gap in a local window, because draft
+  # value decays steeply at the top and flattens below - one global threshold
+  # would cut a few tiers early and then lump the whole remaining pool together.
   method: gap_based
-  gap_sd_multiple: 1.0
+  gap_sd_multiple: 2.2      # a break needs a gap this many times the local median
+  local_window: 15          # neighbourhood size for judging "normal" gap
   min_tier_size: 3
-  max_tiers: 12
+  max_tier_size: 0          # 0 = derive from max_tiers
+  max_tiers: 18
 
 risk:
   # Composite risk score weights (0-1, higher = riskier).

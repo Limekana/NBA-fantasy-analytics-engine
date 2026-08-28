@@ -46,6 +46,9 @@ COLUMN_SYNONYMS: dict[str, str] = {
     "usg_pct": "usage_rate", "usg": "usage_rate",
 }
 
+# The minimum a file must have to be treated as a game log at all.
+REQUIRED_GAME_LOG_COLUMNS = {"player_name", "points", "rebounds", "assists"}
+
 NUMERIC_COLUMNS = (
     "minutes", "points", "rebounds", "assists", "steals", "blocks", "turnovers",
     "personal_fouls", "free_throws_made", "three_pointers_made",
@@ -160,10 +163,32 @@ class CSVSource(DataSource):
         if not files:
             raise FileNotFoundError(f"No .csv/.parquet files found in {directory}")
 
-        frames = []
+        frames, skipped = [], []
         for path in files:
             raw = pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
-            frames.append(coerce_types(normalise_columns(raw), season))
+            normalised = normalise_columns(raw)
+            # A season directory often ends up holding other CSVs too - player
+            # metadata, a schedule, an ADP export. Loading one of those as a game
+            # log produces statless rows that poison every downstream aggregate
+            # (and, because they become NaN, can silently break tiering rather
+            # than failing loudly). So require real game-log columns.
+            missing = REQUIRED_GAME_LOG_COLUMNS - set(normalised.columns)
+            if missing:
+                skipped.append((path.name, sorted(missing)))
+                continue
+            frames.append(coerce_types(normalised, season))
+
+        if not frames:
+            detail = "; ".join(f"{name} (missing {cols})" for name, cols in skipped)
+            raise FileNotFoundError(
+                f"No usable game-log files in {directory}. Skipped: {detail or 'none'}.\n"
+                "A game log needs at least a player column, a date column and the "
+                "box-score stats. See `python -m src.cli data-help`."
+            )
+        if skipped:
+            names = ", ".join(name for name, _ in skipped)
+            print(f"  note: ignored {len(skipped)} non-game-log file(s) in {directory.name}: {names}")
+
         combined = pd.concat(frames, ignore_index=True)
         if {"player_id", "game_id"}.issubset(combined.columns):
             combined = combined.drop_duplicates(subset=["player_id", "game_id"], keep="first")

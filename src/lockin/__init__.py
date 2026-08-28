@@ -7,6 +7,8 @@ from src.lockin.simulator import (
 )
 from src.lockin.strategies import (
     OptimalIIDStrategy,
+    SecretaryStrategy,
+    simulate_secretary_week,
     PercentileStrategy,
     PlayerContext,
     ThresholdStrategy,
@@ -17,4 +19,5 @@ __all__ = [
     "LockInSimulator", "LockInProfile", "WeekResult", "simulate_week",
     "reconstruct_weeks", "PlayerContext", "continuation_values",
     "ThresholdStrategy", "PercentileStrategy", "OptimalIIDStrategy",
+    "SecretaryStrategy", "simulate_secretary_week",
 ]
