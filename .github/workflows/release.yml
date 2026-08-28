@@ -61,11 +61,18 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Export the image as a loadable tarball
+      # A `docker save` of a multi-arch tag only captures the runner's platform,
+      # so the tarball is explicitly labelled linux/amd64. Apple Silicon users
+      # should `docker pull` instead - the registry resolves arm64 for them.
+      # The tarball exists for the fully-offline case (no registry auth needed),
+      # which matters because GHCR packages start out PRIVATE even on a public
+      # repo until the owner flips them to public.
+      - name: Export the image as a loadable tarball (linux/amd64)
         run: |
-          docker pull ghcr.io/${{ steps.meta.outputs.repo_lc }}:${{ steps.meta.outputs.tag }}
+          docker pull --platform linux/amd64 ghcr.io/${{ steps.meta.outputs.repo_lc }}:${{ steps.meta.outputs.tag }}
           docker tag ghcr.io/${{ steps.meta.outputs.repo_lc }}:${{ steps.meta.outputs.tag }} nba-fantasy:${{ steps.meta.outputs.tag }}
-          docker save nba-fantasy:${{ steps.meta.outputs.tag }} | gzip > nba-fantasy-${{ steps.meta.outputs.tag }}-docker.tar.gz
+          docker save nba-fantasy:${{ steps.meta.outputs.tag }} \
+            | gzip > nba-fantasy-${{ steps.meta.outputs.tag }}-linux-amd64.tar.gz
           ls -lh nba-fantasy-*.tar.gz
 
       - name: Publish the release
@@ -73,6 +80,6 @@ jobs:
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: ${{ steps.meta.outputs.tag }}
-          files: nba-fantasy-*-docker.tar.gz
+          files: nba-fantasy-*.tar.gz
           generate_release_notes: true
           body_file: .github/RELEASE_TEMPLATE.md

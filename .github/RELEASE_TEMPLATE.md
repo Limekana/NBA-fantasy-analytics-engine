@@ -5,11 +5,19 @@ Quantitative draft system for a 10-team Sleeper **Lock-In** league.
 ### Run it with Docker
 
 ```bash
-# pull (works on Apple Silicon and x86)
+# Preferred - resolves the right architecture automatically (Apple Silicon too)
 docker pull ghcr.io/limekana/nba-fantasy-analytics-engine:latest
+```
 
-# or load the tarball attached below, if you want it fully offline
-gunzip -c nba-fantasy-*-docker.tar.gz | docker load
+> **First time only:** GitHub Container Registry packages start out **private**
+> even on a public repo. If the pull asks you to authenticate, go to your
+> profile → Packages → `nba-fantasy-analytics-engine` → Package settings →
+> Change visibility → Public. Or just use the tarball below, which needs no
+> registry access at all.
+
+```bash
+# Fully offline alternative (linux/amd64; use the pull above on Apple Silicon)
+gunzip -c nba-fantasy-*-linux-amd64.tar.gz | docker load
 ```
 
 Then, from a folder where you want the data and outputs to live:

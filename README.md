@@ -69,6 +69,18 @@ This diffs Sleeper's live scoring settings against the YAML.
 
 ---
 
+## Cutting a release
+
+The container is built and published by CI, not by hand.
+
+```bash
+./scripts/release.sh v0.1.0
+```
+
+Or, entirely from a phone: github.com → **Actions** → **Release** → *Run
+workflow* → type the tag. CI runs the tests, builds for amd64 and arm64,
+publishes to `ghcr.io`, and attaches an offline tarball to the release.
+
 ## Run it with Docker (recommended for draft day)
 
 ```bash
