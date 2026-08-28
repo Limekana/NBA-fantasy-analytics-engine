@@ -13,6 +13,9 @@ Lock-In mechanics — not from generic fantasy rankings.
 
 | Component | State |
 |---|---|
+| Docker image | Built and published by CI on tag |
+| Backtesting | Working — projection + Lock-In strategy backtests |
+| Rookie projections | 2026 class configured, 4 flagged for verification |
 | Configuration system | Working, validated |
 | Fantasy scoring engine | Working, **191 tests passing** |
 | Bonus interaction rules | Working; one assumption **needs your confirmation** (below) |
@@ -23,8 +26,8 @@ Lock-In mechanics — not from generic fantasy rankings.
 | Monte Carlo draft simulator | Working |
 | Live draft assistant | Working |
 | Interactive HTML board | Working |
+| nba_api adapter contracts | Verified against the installed package schema |
 | **Real NBA data ingested** | **No — network blocked in the build environment** |
-| **Backtesting** | **Not implemented** — needs real data first |
 
 **The pipeline is complete and tested end to end. It has not yet been run on real
 NBA data**, because every NBA data host was blocked by this environment's egress
@@ -66,15 +69,39 @@ This diffs Sleeper's live scoring settings against the YAML.
 
 ---
 
-## Quick start
+## Run it with Docker (recommended for draft day)
+
+```bash
+docker pull ghcr.io/limekana/nba-fantasy-analytics-engine:latest
+
+mkdir -p config data outputs
+docker create --name tmp ghcr.io/limekana/nba-fantasy-analytics-engine:latest \
+  && docker cp tmp:/app/config ./ && docker rm tmp
+
+alias nba='docker run --rm -v "$PWD/config:/app/config" -v "$PWD/data:/app/data" \
+  -v "$PWD/outputs:/app/outputs" ghcr.io/limekana/nba-fantasy-analytics-engine:latest'
+
+nba check-config
+nba data-help
+```
+
+`config/` is bind-mounted, so editing `config/assumptions.yaml` when news breaks
+takes effect on the next command — no rebuild. Everything except `ingest` and
+`verify-league` runs fully offline, which is what you want at a draft table.
+
+Or with compose: `docker compose run --rm engine build-board`.
+
+## Quick start (local Python)
 
 ```bash
 pip install -r requirements.txt
 
 python -m src.cli check-config     # validate config, show resolved scoring rules
 python -m src.cli scoring-check    # reference stat lines to check against Sleeper
+python -m src.cli data-help        # where to get data, and the exact CSV format
 python -m src.cli demo             # full pipeline on synthetic data, no network
-pytest -q                          # 191 tests
+python -m src.cli backtest         # validate the model against naive baselines
+pytest -q                          # 260 tests
 ```
 
 `demo` writes `outputs/SYNTHETIC_draft_board.{csv,html}`. **The synthetic board
@@ -109,6 +136,38 @@ python -m src.cli draft --pick 17 --slot 4 --drafted drafted.txt --roster PG,C
 The assistant always shows its arithmetic — never a bare "pick this player".
 
 ---
+
+## Is the 37% rule right for Lock-In? No — and the code shows why
+
+The 37% (secretary) rule is genuinely optimal, but for a different problem:
+
+| | Secretary problem | Lock-In week |
+|---|---|---|
+| Objective | maximise P(picking the single best) | maximise **expected points** |
+| Payoff | all-or-nothing; 2nd best scores zero | 2nd-best game scores nearly as much |
+| Distribution | unknown; only relative ranks | **known** — the player's own game log |
+| n | large | 2–4 |
+
+The third row is decisive: we are not guessing in the dark. Knowing a player's
+scoring distribution lets us compute the exact value of continuing, which the 37%
+rule throws away. The small `n` makes it worse — with 3.4 games a week,
+`floor(n/e) = 1`, and in a 2-game week `floor(2/e) = 0`, so it locks Monday
+unconditionally.
+
+Replayed over real chronological weeks (`python -m src.cli backtest`):
+
+```
+strategy       fp_per_week   share of available edge
+optimal_iid         19.55                     100%
+percentile          19.40                      95%
+secretary (37%)     18.05                      49%
+threshold           17.18                      17%
+last_game           16.63                       0%
+```
+
+The 37% rule beats doing nothing but captures under half the available edge.
+`optimal_iid` — lock when the game in hand beats `W[k] = E[max(F, W[k-1])]` —
+is what the model uses.
 
 ## What makes this a Lock-In model, not a fantasy ranking
 
@@ -186,15 +245,16 @@ src/
   scoring/           deterministic scoring engine
   ingestion/         nba_api, Sleeper, CSV, synthetic adapters
   distributions/     player profiles, percentiles, bonus rates, archetypes
-  projections/       per-36 blend, age curve, games-played model
+  projections/       per-36 blend, age curve, games-played, rookie priors
   lockin/            Lock-In strategies and simulator
   schedule/          fantasy weeks, games-per-week
   adp/               multi-source ADP, name matching, value gaps
   draft/             board, tiers, VOR, Monte Carlo simulator, live assistant
   reporting/         interactive HTML board
   valuation.py       combines everything into a player valuation
+  backtest.py        projection + Lock-In backtests, weight tuning
   pipeline.py        the one reproducible path from raw data to board
-tests/               191 tests
+tests/               260 tests
 docs/
   lock_in_mechanics.md   what was verified vs assumed, with sources
   data_sources.md        how to get real data in
@@ -220,11 +280,14 @@ outputs/               draft_board.csv / .html, player_values.csv
 ## Honest limitations
 
 - **No real data has been through this yet.** Ingestion is untested against live APIs.
-- **Backtesting is not implemented** (handoff §20 calls it mandatory). Until it
-  exists, the projection weights, age curve and shrinkage constant are reasoned
-  choices, not empirical results. Treat the board as a well-specified
-  *hypothesis*, not a validated model.
-- **Rookies are absent** unless you add a prior in `config/assumptions.yaml`.
+- **The projection model has not yet beaten a naive baseline.** Backtesting is now
+  implemented, and on synthetic data the model ranks players about as well as
+  "last season's FP/game" and no better. That is the honest current state — and
+  it is what handoff Rule 5 asks you to confront rather than paper over. Re-run
+  `backtest --tune` on real data before trusting model rank over the baseline.
+- **Rookie projections are pure prior.** Four of the eight configured 2026
+  rookies have landing spots from single or unconfirmed sources and are flagged
+  `VERIFY` in the pipeline warnings.
 - **No ADP is loaded**, so market-inefficiency analysis is unavailable until you
   add sources — the board currently ranks on model value alone.
 - **The real 2026-27 schedule is not loaded**, so Lock-In values use historical

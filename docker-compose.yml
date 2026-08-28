@@ -1,0 +1,20 @@
+# Convenience wrapper so draft-day commands are short.
+#
+#   docker compose run --rm engine demo
+#   docker compose run --rm engine build-board
+#   docker compose run --rm engine draft --pick 17 --slot 4
+#
+# config/, data/ and outputs/ are bind-mounted, so editing config/league.yaml or
+# config/assumptions.yaml on the host takes effect on the next run with no
+# rebuild - which matters when news breaks during the draft.
+
+services:
+  engine:
+    build: .
+    image: nba-fantasy-analytics-engine:latest
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+    # Keeps bind-mounted files owned by you rather than root on Linux.
+    user: "${UID:-1000}:${GID:-1000}"
