@@ -1,0 +1,67 @@
+# =============================================================================
+# DATA SOURCE REGISTRY
+# =============================================================================
+# Handoff sec.5: "Prioritize reliable and legally accessible public data."
+# Handoff Rule 6: "Track timestamps."
+#
+# NOTE: the environment this repo was built in had outbound HTTPS to
+# stats.nba.com, basketball-reference.com and api.sleeper.app blocked by an
+# egress policy (HTTP 403 on CONNECT). Ingestion adapters are implemented and
+# unit-tested against fixtures, but MUST be run from a machine with network
+# access. See docs/data_sources.md.
+# =============================================================================
+
+game_logs:
+  primary:
+    name: nba_api
+    adapter: src.ingestion.nba_api_source:NBAApiSource
+    host: stats.nba.com
+    requires: ["nba_api"]
+    licence: "Public NBA stats endpoints. Personal/non-commercial use."
+    rate_limit_seconds: 0.75
+    notes: >
+      LeagueGameLog / PlayerGameLogs endpoints. Provides every required field
+      including FTM, FG3M, PF, TOV, plus FGA/FTA/3PA and starter flag via
+      boxscoretraditionalv2.
+  fallback:
+    name: csv
+    adapter: src.ingestion.csv_source:CSVSource
+    notes: >
+      Drop any CSV matching docs/schemas.md game_log schema into
+      data/raw/<season>/. Lets you use a Kaggle export or a manual scrape
+      without touching pipeline code.
+
+players:
+  primary:
+    name: sleeper
+    adapter: src.ingestion.sleeper_source:SleeperSource
+    host: api.sleeper.app
+    endpoint: "/v1/players/nba"
+    licence: "Public, unauthenticated, no key required."
+    notes: >
+      Canonical Sleeper player_id, team, positions, age, injury_status.
+      Sleeper player_id is the join key for anything league-specific.
+
+schedule:
+  primary:
+    name: nba_api_schedule
+    adapter: src.ingestion.nba_api_source:NBAScheduleSource
+    host: stats.nba.com
+    notes: "scheduleleaguev2 endpoint. Needed for real games-per-week."
+  fallback:
+    name: pmf
+    notes: >
+      config/model.yaml schedule.fallback_games_per_week_pmf. Marked as an
+      ASSUMPTION in all outputs. Lock-In value is highly schedule-sensitive, so
+      replace this with the real schedule as soon as it is published.
+
+adp:
+  # Handoff sec.14: never trust one source. Store source + timestamp + format.
+  # Place CSVs in data/external/adp/ matching docs/schemas.md adp schema.
+  sources: []
+  # - name: "example_source"
+  #   file: "data/external/adp/example_2026-08-28.csv"
+  #   retrieved_at: "2026-08-28T00:00:00Z"
+  #   league_format: "10-team"
+  #   scoring_format: "sleeper_points_lockin"
+  #   notes: "Manually exported; verify column mapping."

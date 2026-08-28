@@ -1,0 +1,55 @@
+# =============================================================================
+# EXPLICIT, EDITABLE PLAYER-LEVEL ASSUMPTIONS
+# =============================================================================
+# Handoff sec.7: "Keep injury assumptions explicit and editable."
+# Nothing here is a fact. Every entry overrides the statistical baseline and is
+# surfaced in the draft board's `assumption_notes` column so you can always see
+# WHY a player moved.
+#
+# Add entries as news breaks in the days before the draft. Re-run:
+#   python -m src.cli build-board
+# =============================================================================
+
+# Games a player is expected to miss, on top of the statistical baseline.
+# Use for known surgeries, suspensions, and recovery timelines.
+#   games_missed: hard subtraction from projected games
+#   ramp_minutes_penalty: minutes/game reduction while ramping back
+#   note: REQUIRED - the source and date of the information
+injuries: {}
+  # Example (delete or replace):
+  # "Player Name":
+  #   games_missed: 20
+  #   ramp_minutes_penalty: 3.0
+  #   availability_multiplier: 0.85
+  #   note: "Achilles repair Feb 2026; reported Aug 2026 return target of December."
+
+# Override projected minutes where role is changing for reasons the historical
+# data cannot see (trade, new coach, rookie ahead of them on the depth chart).
+role_minutes: {}
+  # "Player Name":
+  #   minutes: 32.0
+  #   confidence: medium        # low | medium | high -> feeds role risk
+  #   note: "Starting PG after the March 2026 trade."
+
+# Role uncertainty multiplier, 0.0 (certain) to 1.0 (total unknown). Feeds the
+# `risk` composite. Defaults to 0.25 for veterans, 0.55 for rookies (see
+# src/projections/games_played.py) when not listed here.
+role_uncertainty: {}
+  # "Player Name": 0.7
+
+# Players to exclude entirely (retired, overseas, two-way not expected to stick).
+exclude: []
+
+# Rookies: no NBA game logs exist, so they must be projected from an external
+# prior. Provide a per-36 line or they are dropped from the board with a warning.
+# ASSUMPTION - sourced from your own research; document it.
+rookies: {}
+  # "Rookie Name":
+  #   team: "TEAM"
+  #   position: "PG"
+  #   age: 19
+  #   minutes: 26.0
+  #   per36: {points: 18.0, rebounds: 4.0, assists: 5.5, steals: 1.2,
+  #           blocks: 0.4, turnovers: 2.8, personal_fouls: 2.2,
+  #           free_throws_made: 3.5, three_pointers_made: 2.0}
+  #   note: "Consensus summer-league-adjusted projection, 2026-08-28."

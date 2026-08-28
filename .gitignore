@@ -1,0 +1,20 @@
+*.pyc
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+.DS_Store
+.ipynb_checkpoints/
+
+# Raw data is immutable but NOT version-controlled (Rule 2).
+data/raw/**
+!data/raw/.gitkeep
+data/processed/**
+!data/processed/.gitkeep
+data/external/**
+!data/external/.gitkeep
+!data/external/adp/*.csv
+
+outputs/**
+!outputs/.gitkeep
+!outputs/reports/.gitkeep

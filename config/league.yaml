@@ -1,0 +1,143 @@
+# =============================================================================
+# LEAGUE CONFIGURATION - single source of truth
+# =============================================================================
+# Rule 1 (handoff sec.23): nothing league-specific may be hardcoded in src/.
+# Change a value here, rerun the pipeline, and every valuation updates.
+#
+# STATUS: PROVISIONAL. Confirm against the actual Sleeper league settings page
+# before trusting any output. Handoff sec.1: "Do not assume these settings are final."
+# =============================================================================
+
+meta:
+  league_name: "NBA Fantasy 2026-27"
+  platform: sleeper
+  season: "2026-27"
+  draft_date: "2026-08-30"
+  # Set this once the league exists on Sleeper; enables live settings verification
+  # via `python -m src.cli verify-league --league-id <id>`.
+  sleeper_league_id: null
+  config_version: 1
+  last_updated: "2026-08-28"
+
+league:
+  teams: 10
+  game_mode: lock_in          # one of: lock_in | head_to_head | points | roto
+
+roster:
+  PG: 1
+  SG: 1
+  G: 1
+  SF: 1
+  PF: 1
+  F: 1
+  C: 1
+  UTIL: 2
+  BN: 5
+  IR: 1
+
+# Which slots a given primary position is eligible for. Used by the draft
+# module for scarcity / replacement-level maths.
+position_eligibility:
+  PG: [PG, G, UTIL]
+  SG: [SG, G, UTIL]
+  SF: [SF, F, UTIL]
+  PF: [PF, F, UTIL]
+  C:  [C, UTIL]
+
+playoffs:
+  teams: 8
+  start_week: 23
+
+waivers:
+  period_days: 1
+
+trades:
+  trade_deadline_week: 20
+  draft_pick_trading: true
+
+# -----------------------------------------------------------------------------
+# SCORING
+# -----------------------------------------------------------------------------
+# Values are SIGNED and applied directly (turnovers/fouls are negative here, so
+# the engine multiplies rather than subtracts). Any stat key absent from this
+# block simply scores zero - the engine never assumes a default weight.
+scoring:
+  points: 0.5
+  rebounds: 1
+  assists: 1
+  steals: 2
+  blocks: 2
+  turnovers: -1
+  personal_fouls: -1
+  free_throws_made: 0.25
+  three_pointers_made: 0.5
+
+bonuses:
+  double_double: 2
+  triple_double: 3
+  points_40_plus: 3
+  points_50_plus: 4
+  assists_15_plus: 3
+
+# -----------------------------------------------------------------------------
+# BONUS RULES - the ambiguity the handoff (sec.4) explicitly warned about
+# -----------------------------------------------------------------------------
+# These control HOW bonuses interact. Each is tested in both states in
+# tests/test_bonuses.py. See docs/lock_in_mechanics.md for verification status.
+bonus_rules:
+
+  # Categories counted toward a double-double / triple-double.
+  # VERIFIED: Sleeper counts points, rebounds, assists, steals, blocks.
+  double_double_categories: [points, rebounds, assists, steals, blocks]
+  double_double_threshold: 10
+
+  # Does a triple-double ALSO collect the double-double bonus?
+  # VERIFIED true - Sleeper support: "If using both scoring options, they will
+  # stack on top of each other. That means if a player gets a Triple-Double,
+  # they'll get the point values for both double-double and triple-double."
+  triple_double_stacks_with_double_double: true
+
+  # Does a 50-point game ALSO collect the 40+ bonus?
+  # >>> UNVERIFIED ASSUMPTION <<<  (default: true)
+  # Rationale: Sleeper's documented general principle is that scoring settings
+  # stack, and 40+/50+ are separate independent threshold settings. Could NOT be
+  # confirmed against support.sleeper.com from the build environment.
+  # ACTION REQUIRED: score one known 50-point game in your league's Sleeper UI
+  # and compare with `python -m src.cli scoring-check`. Flip to false if needed.
+  points_thresholds_stack: true
+
+  # Does a quadruple-double pay the triple-double bonus (no separate quad setting)?
+  # ASSUMPTION: yes - it satisfies the >=3 category condition.
+  quadruple_double_pays_triple_double: true
+
+# -----------------------------------------------------------------------------
+# LOCK-IN MECHANICS
+# -----------------------------------------------------------------------------
+# See docs/lock_in_mechanics.md for sourcing. These describe the RULES;
+# lockin.strategy_defaults describes how we MODEL manager behaviour.
+lock_in:
+  enabled: true
+  games_counted_per_player_per_week: 1
+
+  # VERIFIED: if a manager never locks a game, Sleeper auto-takes the player's
+  # FINAL game of the fantasy week. This - not max() - is the true do-nothing
+  # baseline, and it is what an inattentive manager actually scores.
+  auto_lock_fallback: last_game     # last_game | first_game | best_game
+
+  # A lock is irreversible once submitted.
+  lock_is_irreversible: true
+
+  # Player must be in the starting lineup before the game to be lockable.
+  requires_starting_lineup: true
+
+# -----------------------------------------------------------------------------
+# FANTASY CALENDAR
+# -----------------------------------------------------------------------------
+calendar:
+  week_start_weekday: 1     # ISO weekday, 1=Monday. Sleeper NBA weeks run Mon-Sun.
+  regular_season_weeks: 22
+
+draft:
+  type: snake               # snake | linear | auction
+  rounds: 14                # roster size excluding IR
+  my_draft_slot: null       # 1..teams. Set after the lottery; null = unknown.

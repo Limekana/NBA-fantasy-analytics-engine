@@ -1,0 +1,15 @@
+# Core - handoff sec.22 "Add other dependencies only when necessary."
+pandas>=2.0
+numpy>=1.24
+scipy>=1.10
+PyYAML>=6.0
+
+# Reporting
+jinja2>=3.1
+
+# Testing
+pytest>=7.4
+
+# Optional ingestion (network required; see docs/data_sources.md)
+# nba_api>=1.4
+# requests>=2.31

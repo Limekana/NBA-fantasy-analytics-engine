@@ -1,0 +1,127 @@
+# =============================================================================
+# MODEL CONFIGURATION - every tunable assumption in the projection pipeline
+# =============================================================================
+# Handoff Rule 7: separate FACTS from ASSUMPTIONS. Everything in this file is an
+# ASSUMPTION. Everything derived from game logs is a FACT. Model outputs are
+# labelled as such in outputs/draft_board.csv.
+#
+# Handoff sec.6: "The exact weights should be empirically tested rather than
+# assumed." Run `python -m src.cli backtest` to score these against baselines
+# once >=2 seasons of real game logs are ingested.
+# =============================================================================
+
+projection:
+  # Weight on each prior season when blending per-minute production.
+  # Recency-weighted; must be > 0 and are renormalised over available seasons.
+  season_weights:
+    "2025-26": 0.60
+    "2024-25": 0.30
+    "2023-24": 0.10
+
+  # Shrinkage toward positional mean for small samples (games).
+  # rate = (n*player_rate + k*positional_rate) / (n + k)
+  shrinkage_games_k: 20
+
+  # Age curve applied to per-minute production. Piecewise-linear multiplier on
+  # projected rates, anchored at the listed ages. ASSUMPTION - see docs/assumptions.md.
+  age_curve:
+    19: 1.06
+    21: 1.05
+    23: 1.03
+    25: 1.01
+    27: 1.00
+    29: 0.99
+    31: 0.97
+    33: 0.94
+    35: 0.90
+    38: 0.84
+
+  # Minutes projection: blend of last-season minutes and role-based minutes.
+  minutes:
+    prior_weight: 0.70          # weight on historical minutes
+    role_weight: 0.30           # weight on config/assumptions.yaml role_minutes
+    max_minutes: 38.0           # sanity cap
+    min_minutes: 8.0
+
+games_played:
+  # Baseline availability by age band (fraction of 82). ASSUMPTION.
+  baseline_availability:
+    22: 0.88
+    26: 0.86
+    30: 0.83
+    34: 0.76
+    38: 0.68
+
+  # Weight on a player's own multi-season availability history vs the age baseline.
+  history_weight: 0.65
+  season_length: 82
+
+  # Beta distribution concentration for availability uncertainty. Lower = more
+  # uncertain. Used to derive games_floor / games_median / games_ceiling.
+  beta_concentration: 30.0
+  floor_percentile: 0.10
+  ceiling_percentile: 0.90
+
+distributions:
+  percentiles: [10, 25, 50, 75, 90, 95]
+  threshold_probabilities: [30, 40, 50, 60]
+  # Minimum games before a player's own empirical distribution is trusted;
+  # below this we widen using the positional variance prior.
+  min_games_for_empirical: 15
+
+schedule:
+  # FALLBACK ONLY, used when no real schedule CSV is present in data/external/.
+  # Distribution of games-per-fantasy-week for a typical NBA team.
+  # ASSUMPTION - replace by ingesting the real 2026-27 schedule.
+  fallback_games_per_week_pmf:
+    1: 0.02
+    2: 0.22
+    3: 0.46
+    4: 0.28
+    5: 0.02
+
+lockin:
+  # Which strategy drives the headline `lockin_value` column.
+  # optimal_iid is the honest "smart but not clairvoyant" estimate.
+  primary_strategy: optimal_iid
+
+  # Strategies always computed for comparison.
+  report_strategies: [perfect, last_game, threshold, percentile, optimal_iid]
+
+  # Static threshold strategy: lock the first game at or above this FP.
+  threshold_fp: 40.0
+
+  # Percentile strategy: lock the first game at or above this percentile of the
+  # player's own FP distribution.
+  percentile: 70
+
+  # Manager engagement: probability the manager actually makes an active lock
+  # decision rather than defaulting to the auto-lock (last game). 1.0 assumes a
+  # perfectly attentive manager. ASSUMPTION.
+  manager_engagement: 0.90
+
+draft_simulation:
+  n_simulations: 2000
+  # Opponent behaviour mix. Must sum to 1.0.
+  manager_archetypes:
+    adp_follower: 0.60        # picks near ADP with noise
+    value_follower: 0.20      # picks near model rank with noise
+    need_based: 0.20          # weights positional need
+  adp_noise_sd_picks: 6.0     # SD (in picks) of deviation from ADP
+  random_deviation_rate: 0.20 # chance a manager ignores the board entirely
+
+tiers:
+  # Tiers are cut where the gap between consecutive players' projected season
+  # value exceeds `gap_sd_multiple` local standard deviations - not arbitrary
+  # fixed-size buckets (handoff sec.16).
+  method: gap_based
+  gap_sd_multiple: 1.0
+  min_tier_size: 3
+  max_tiers: 12
+
+risk:
+  # Composite risk score weights (0-1, higher = riskier).
+  weights:
+    availability: 0.40        # games-played uncertainty
+    variance: 0.30            # game-to-game FP variance
+    role: 0.30                # role/minutes uncertainty from assumptions.yaml
