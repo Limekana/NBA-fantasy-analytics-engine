@@ -1,160 +1,565 @@
 # NBA Fantasy Analytics Engine
 
-Quantitative draft and valuation system for a **10-team Sleeper Fantasy
-Basketball league in Lock-In mode**, 2026-27 season.
+Quantitative draft system for a **10-team Sleeper Fantasy Basketball league in
+Lock-In mode**, 2026-27 season.
 
-Player value is computed from the league's actual scoring settings, game-level
-historical data, projected roles, schedule, availability, bonus frequency and
-Lock-In mechanics — not from generic fantasy rankings.
+Player value is computed from your league's actual scoring settings, game-level
+history, projected roles, schedule, availability, bonus frequency and Lock-In
+mechanics — not from generic fantasy rankings.
 
 ---
+
+# Setup guide (start here)
+
+Written for someone who has never used a terminal. Follow it top to bottom.
+Commands are **Windows PowerShell**; where macOS/Linux differs it's marked.
+
+**Do all of this before draft day.** Steps 5–7 need internet, and venue wifi is
+not something to bet a draft on.
+
+> **The code is not "in the cloud."** It lives on GitHub. You copy it to your
+> laptop once, and from then on it runs locally — offline.
+
+---
+
+## Step 0 — Open PowerShell
+
+Press `Windows key`, type `powershell`, press Enter. A blue window opens.
+
+That's it — that's "the terminal". You type a command, press Enter, it runs.
+
+Two things worth knowing before anything else:
+
+- **You are always "in" a folder.** The path shown before the `>` is where you
+  are. Commands act on that folder.
+- **`cd` means "change directory"** — it's how you move between folders.
+
+Try it. Type this and press Enter:
+
+```powershell
+cd ~
+```
+
+`~` is shorthand for your user folder (`C:\Users\YourName`). You're now there.
+
+> *macOS/Linux: open **Terminal** instead. Everything below works the same
+> except where noted.*
+
+---
+
+## Step 1 — Install Python
+
+Python is the language this tool is written in. You need it to run anything.
+
+1. Go to **[python.org/downloads](https://www.python.org/downloads/)**
+2. Download the latest Python 3 (3.11 or newer)
+3. Run the installer — **⚠️ tick the box that says "Add python.exe to PATH"** at
+   the bottom of the first screen. This is the single most common thing people
+   miss, and skipping it means every command below fails with
+   `python: command not found`.
+4. Click Install Now
+
+**Check it worked.** Close PowerShell, open a fresh one, and type:
+
+```powershell
+python --version
+```
+
+You should see something like `Python 3.12.4`.
+
+<details>
+<summary>If you get an error or it opens the Microsoft Store</summary>
+
+Windows ships a fake `python` that opens the Store. Try `py --version` instead.
+If `py` works, use `py` everywhere below in place of `python`.
+
+If neither works, you missed the "Add to PATH" checkbox — re-run the installer,
+choose **Modify**, and tick it.
+</details>
+
+---
+
+## Step 2 — Install Git
+
+Git is how you copy the code from GitHub, and how you get updates later.
+
+1. Go to **[git-scm.com/downloads](https://git-scm.com/downloads)**
+2. Download and run the installer
+3. Accept every default (there are a lot of screens — just keep clicking Next)
+
+**Check it worked** in a fresh PowerShell window:
+
+```powershell
+git --version
+```
+
+You should see something like `git version 2.45.1`.
+
+---
+
+## Step 3 — Copy the code to your laptop
+
+This is called **cloning**. It downloads the whole project into a new folder.
+
+```powershell
+cd ~
+git clone https://github.com/Limekana/NBA-fantasy-analytics-engine.git
+cd NBA-fantasy-analytics-engine
+```
+
+Line by line:
+- `cd ~` — go to your user folder
+- `git clone <url>` — download the project (creates a folder with that name)
+- `cd NBA-fantasy-analytics-engine` — step into it
+
+**You are now in the project folder. Every command from here on assumes that.**
+If you close PowerShell and come back later, you must `cd` back in first:
+
+```powershell
+cd ~\NBA-fantasy-analytics-engine
+```
+
+Check you're in the right place — this should list files like `README.md` and
+folders like `src`:
+
+```powershell
+ls
+```
+
+---
+
+## Step 4 — Install the tool's dependencies
+
+This project uses a few Python libraries (for maths and tables). Install them:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+`requirements.txt` is a list of what's needed; `pip` is Python's installer. This
+takes a minute or two and prints a lot of text. That's normal.
+
+<details>
+<summary>Optional but recommended: use a virtual environment</summary>
+
+A "venv" keeps this project's libraries separate from everything else on your
+machine, so projects can't break each other. Good practice, and worth learning.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+After activating you'll see `(.venv)` at the start of your prompt. **You must
+re-activate every time you open a new PowerShell window:**
+
+```powershell
+cd ~\NBA-fantasy-analytics-engine
+.\.venv\Scripts\Activate.ps1
+```
+
+**If activation fails** with *"running scripts is disabled on this system"*,
+Windows is blocking scripts by default. Fix it once:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
+Then try activating again. This only affects your own user account.
+
+*macOS/Linux activation is `source .venv/bin/activate` instead.*
+</details>
+
+---
+
+## Step 5 — Check your league settings are right
+
+**Do this before anything else touches data.** Every number the system produces
+comes from these settings, so if they're wrong, everything downstream is wrong.
+
+```powershell
+python -m src.cli check-config
+```
+
+This prints your scoring rules. **Compare them against your league's settings
+page on Sleeper, line by line.** Currently configured:
+
+| | |
+|---|---|
+| points | 0.5 |
+| rebounds / assists | 1 |
+| steals / blocks | 2 |
+| turnovers / fouls | −1 |
+| free throws made | 0.25 |
+| threes made | 0.5 |
+| double-double | +2 |
+| triple-double | +3 |
+| 40+ points | +3 |
+| 50+ points | +4 |
+| 15+ assists | +3 |
+| 20+ rebounds | +3 |
+
+If anything differs, open `config\league.yaml` in Notepad and change the number.
+Nothing else needs editing — the whole pipeline reads from that one file.
+
+### One rule still needs your eyes
+
+```powershell
+python -m src.cli scoring-check
+```
+
+Find the line marked `50 pts exactly  <-- KEY TEST`. It currently assumes a
+50-point game pays **both** the 40+ and 50+ bonuses (7 points total). I couldn't
+verify that against Sleeper's docs. Check a real 50-point game in Sleeper's
+scoring view. If it only pays 4, open `config\league.yaml` and change:
+
+```yaml
+  points_thresholds_stack: false
+```
+
+---
+
+## Step 6 — Try it on fake data first
+
+Before dealing with real data, prove the tool runs:
+
+```powershell
+python -m src.cli demo
+```
+
+This generates fictional players, runs the entire pipeline, and writes a draft
+board. Takes a minute or two.
+
+**Everything it produces is fake** and labelled as such. It exists only to
+confirm the machinery works on your machine.
+
+Open the result to see what you're building toward:
+
+```powershell
+start outputs\SYNTHETIC_draft_board.html
+```
+
+*(macOS: `open outputs/SYNTHETIC_draft_board.html`)*
+
+A sortable board should open in your browser. Click column headers to sort.
+
+---
+
+## Step 7 — Get the real data
+
+Now the real thing. **This step needs internet.**
+
+### 7a. Install the NBA data library
+
+```powershell
+python -m pip install nba_api
+```
+
+### 7b. Download three seasons of game logs
+
+Run these one at a time. Each takes 1–3 minutes.
+
+```powershell
+python -m src.cli ingest --season 2025-26
+python -m src.cli ingest --season 2024-25
+python -m src.cli ingest --season 2023-24
+```
+
+**Check each one.** It prints something like `Wrote 26,431 rows`. A full NBA
+season is roughly **26,000 rows**. If you see a few hundred, the download was
+cut short — run it again. Don't build a board on a truncated season.
+
+You need **at least two seasons** or Step 8 can't run.
+
+### 7c. Download player ages and positions
+
+```powershell
+python -m src.cli fetch-players
+```
+
+Game logs don't include ages or positions. Without this, the model assumes
+everyone is 27 and can't work out positional scarcity.
+
+### 7d. Download the schedule
+
+```powershell
+python -m src.cli fetch-schedule --season 2026-27
+```
+
+This one matters more than it looks. In Lock-In, how many games a team plays in
+a week directly changes player value. If the 2026-27 schedule isn't published
+yet, skip it — the model falls back to historical patterns and tells you it did.
+
+> Both files land in `data\external\` and are picked up automatically. No flags
+> to remember.
+
+<details>
+<summary>No internet, or the downloads fail?</summary>
+
+Any CSV works. Run `python -m src.cli data-help` for the full list of sources
+and the exact format. You don't need to rename columns — `PTS`, `TRB`, `TOV`,
+`MP` and friends are all recognised automatically.
+</details>
+
+---
+
+## Step 8 — Backtest (do not skip this)
+
+This is the step that tells you whether to trust the model.
+
+```powershell
+python -m src.cli backtest
+```
+
+It does two things:
+
+**1. Tests the locking strategies** on real past weeks — replaying what each
+approach would actually have scored. No projections involved, so this is the
+most trustworthy output in the system.
+
+**2. Tests the projection model** against dumb baselines like "just use last
+season's average". It trains only on older seasons and predicts a newer one, so
+it can't cheat.
+
+**Read the VERDICT at the bottom.** It says one of three things:
+
+- *"Model beats the best baseline"* — good, trust the model rank.
+- *"Model is level with..."* — the extra machinery isn't earning its place yet.
+  Weight the model rank and last season's FP/game about equally.
+- *"Model LOSES to..."* — something is wrong. Don't trust model rank over the
+  baseline until you've looked into it.
+
+It's designed to tell you when it isn't working. That's the point.
+
+<details>
+<summary>Tuning the model (optional)</summary>
+
+```powershell
+python -m src.cli backtest --tune
+```
+
+Grid-searches how much to weight each past season. If it consistently prefers
+different weights than the defaults, edit `season_weights` in
+`config\model.yaml`. Read the caution it prints — it's easy to fool yourself
+here.
+</details>
+
+---
+
+## Step 9 — Build your real draft board
+
+```powershell
+python -m src.cli build-board
+```
+
+Writes three files into `outputs\`:
+
+| File | What it's for |
+|---|---|
+| `draft_board.html` | **The main thing.** Sortable, filterable, open in a browser |
+| `draft_board.csv` | Same data as a spreadsheet |
+| `player_values.csv` | Underlying per-player stats |
+
+Open it:
+
+```powershell
+start outputs\draft_board.html
+```
+
+**Read the WARNINGS the command prints.** They tell you what's assumed rather
+than measured — missing schedule, unverified rookie landing spots, no ADP.
+
+> **Do this bit now, not on draft day:** that HTML file is completely
+> self-contained. No Python, no internet, no terminal. **Bookmark it, and email
+> it to yourself so it's on your phone too.** If everything else goes wrong at
+> the venue, that one file is still a full draft board.
+
+---
+
+## Step 10 — Set your draft slot
+
+Once you know your pick position from the lottery, open `config\league.yaml` in
+Notepad and set:
+
+```yaml
+draft:
+  my_draft_slot: 4     # your position, 1 to 10
+```
+
+---
+
+## Step 11 — Draft day
+
+**Before you leave the house**, confirm it still runs:
+
+```powershell
+python -m src.cli availability
+```
+
+This shows who's likely to still be there at each of your picks. Nothing below
+needs internet.
+
+### As the draft runs
+
+Keep a plain text file of who's been taken. Make it in Notepad, save it as
+`drafted.txt` in the project folder, one name per line:
+
+```
+Nikola Jokic
+Luka Doncic
+Victor Wembanyama
+```
+
+When you're on the clock:
+
+```powershell
+python -m src.cli draft --pick 17 --drafted drafted.txt
+```
+
+Change `--pick 17` to whatever the current overall pick number is. Add names to
+`drafted.txt` and save as players come off the board.
+
+You'll get top available players, who's likely to disappear before your next
+pick, and a recommendation **with the reasoning shown** — never just a name.
+
+If you want to tell it what you already have (helps with positional need):
+
+```powershell
+python -m src.cli draft --pick 17 --drafted drafted.txt --roster PG,C,SF
+```
+
+---
+
+## The whole thing, as a checklist
+
+```powershell
+# One time
+cd ~\NBA-fantasy-analytics-engine
+python -m pip install -r requirements.txt
+python -m pip install nba_api
+
+# Before draft day (needs internet)
+python -m src.cli check-config
+python -m src.cli scoring-check
+python -m src.cli ingest --season 2025-26
+python -m src.cli ingest --season 2024-25
+python -m src.cli ingest --season 2023-24
+python -m src.cli fetch-players
+python -m src.cli fetch-schedule --season 2026-27
+python -m src.cli backtest
+python -m src.cli build-board
+start outputs\draft_board.html
+
+# Draft day (offline)
+python -m src.cli availability
+python -m src.cli draft --pick 17 --drafted drafted.txt
+```
+
+---
+
+## When something breaks
+
+| Error | Fix |
+|---|---|
+| `python : The term 'python' is not recognized` | Python isn't on PATH. Try `py` instead, or reinstall ticking "Add to PATH" |
+| `No module named 'src'` | You're not in the project folder. `cd ~\NBA-fantasy-analytics-engine` |
+| `No module named 'pandas'` | Step 4 didn't finish. Re-run `python -m pip install -r requirements.txt` |
+| `running scripts is disabled` | `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` |
+| `No game logs found` | Step 7b didn't work. Check `data\raw\` has folders with CSVs in them |
+| Ingest returns only a few hundred rows | Download was truncated. Run it again |
+| `backtest` says "needs at least two seasons" | Ingest a second season |
+
+Getting an update later:
+
+```powershell
+cd ~\NBA-fantasy-analytics-engine
+git pull
+```
+
+---
+
+## Learning Git and Python
+
+You mentioned wanting to learn these. You genuinely only need a small amount to
+use this tool, and you've already used most of it above.
+
+**Git** — you've now used `clone` and `pull`, which covers most day-to-day use.
+The next three worth knowing are `status` (what changed), `add`/`commit` (save a
+checkpoint), and `push` (send it to GitHub).
+
+- [Git in 15 minutes](https://try.github.io) — interactive, no install
+- [Learn Git Branching](https://learngitbranching.js.org) — visual, genuinely fun
+- [Pro Git, chapters 1–3](https://git-scm.com/book/en/v2) — free, the standard reference
+
+**Python** — to read and modify this project you mainly need variables,
+functions, dictionaries and lists.
+
+- [Automate the Boring Stuff](https://automatetheboringstuff.com) — free online, aimed at non-programmers
+- [Python Tutor](https://pythontutor.com) — paste code, watch it run line by line
+
+**Best way to learn on this project specifically:** open `config\model.yaml`,
+change a number, re-run `python -m src.cli build-board`, and see what moves.
+Every value in there is documented with what it does. Nothing you change in
+`config\` can break the code — worst case, `git checkout config/` puts it back.
+
+If you want to see how a piece works, `src\scoring\engine.py` is the best
+starting point: it's the smallest, most self-contained part, and everything else
+depends on it.
+
+---
+---
+
+# Reference
+
+Everything below is background rather than instructions.
 
 ## Status
 
 | Component | State |
 |---|---|
-| Docker image | Built and published by CI on tag |
-| Backtesting | Working — projection + Lock-In strategy backtests |
-| Rookie projections | 2026 class configured, 4 flagged for verification |
-| Configuration system | Working, validated |
-| Fantasy scoring engine | Working, **191 tests passing** |
-| Bonus interaction rules | Working; one assumption **needs your confirmation** (below) |
+| Scoring engine | Working, 260 tests |
 | Lock-In simulator | Working — optimal-stopping model |
-| Distributions, archetypes | Working |
+| Backtesting | Working — projection + strategy backtests |
 | Projections, games-played model | Working |
-| Draft board + tiers + VOR | Working |
+| Rookie projections | 2026 class configured, 4 flagged for verification |
+| Draft board, tiers, VOR | Working |
 | Monte Carlo draft simulator | Working |
 | Live draft assistant | Working |
-| Interactive HTML board | Working |
-| nba_api adapter contracts | Verified against the installed package schema |
-| **Real NBA data ingested** | **No — network blocked in the build environment** |
+| Docker image | Built and published by CI on tag |
+| **Real NBA data ingested** | **Not yet — that's Step 7** |
 
-**The pipeline is complete and tested end to end. It has not yet been run on real
-NBA data**, because every NBA data host was blocked by this environment's egress
-policy (403 on `stats.nba.com`, `basketball-reference.com`, `api.sleeper.app`,
-`support.sleeper.com`). Ingestion adapters are written and unit-tested; run them
-from your own machine. See [`docs/data_sources.md`](docs/data_sources.md).
+## Documentation
 
----
+| File | Contents |
+|---|---|
+| [`docs/running.md`](docs/running.md) | Per-OS setup, Docker vs Python |
+| [`docs/lockin_strategy.md`](docs/lockin_strategy.md) | How to play Lock-In, measured |
+| [`docs/lock_in_mechanics.md`](docs/lock_in_mechanics.md) | What was verified vs assumed, with sources |
+| [`docs/assumptions.md`](docs/assumptions.md) | Every assumption, rated by impact |
+| [`docs/data_sources.md`](docs/data_sources.md) | Where data comes from |
+| [`docs/schemas.md`](docs/schemas.md) | Data formats |
 
-## Two things to do before the draft
+## Running with Docker instead
 
-### 1. Confirm the 50-point bonus rule (2 minutes)
+If you'd rather not install Python. Needs Docker Desktop running.
 
-Sleeper's docs could not be reached from the build environment, so **one scoring
-rule is an unverified assumption**: whether a 50-point game also collects the 40+
-bonus. The model currently assumes it does (7 bonus points, not 4).
-
-```bash
-python -m src.cli scoring-check
+```powershell
+docker compose run --rm engine check-config
+docker compose run --rm engine build-board
+docker compose run --rm engine draft --pick 17
 ```
 
-Compare the line marked `50 pts exactly  <-- KEY TEST` against your league's
-Sleeper scoring. If it disagrees, set
-`bonus_rules.points_thresholds_stack: false` in `config/league.yaml` and re-run.
-Both branches are already tested. Details:
-[`docs/lock_in_mechanics.md`](docs/lock_in_mechanics.md#3-40--50-point-stacking--unverified-action-required).
-
-### 2. Verify the league settings themselves
-
-The handoff calls the settings provisional. Every valuation is downstream of
-them. Once the league exists, put its id in `config/league.yaml`
-(`meta.sleeper_league_id`) and run:
-
-```bash
-python -m src.cli verify-league
-```
-
-This diffs Sleeper's live scoring settings against the YAML.
-
----
-
-> **New here, or unsure which shell to use?** Read
-> **[`docs/running.md`](docs/running.md)** first. It covers cloning to your own
-> laptop, the difference between PowerShell and Terminal, and which commands
-> change on Windows. Short version: the code is not "in the cloud" — clone it and
-> run it locally, and every `python -m src.cli ...` command is identical on all
-> three operating systems.
+Works identically in PowerShell, Terminal and Git Bash. See
+[`docs/running.md`](docs/running.md).
 
 ## Cutting a release
 
-The container is built and published by CI, not by hand.
-
-```bash
-./scripts/release.sh v0.1.0
-```
-
-Or, entirely from a phone: github.com → **Actions** → **Release** → *Run
-workflow* → type the tag. CI runs the tests, builds for amd64 and arm64,
-publishes to `ghcr.io`, and attaches an offline tarball to the release.
-
-## Run it with Docker (recommended for draft day)
-
-```bash
-docker pull ghcr.io/limekana/nba-fantasy-analytics-engine:latest
-
-mkdir -p config data outputs
-docker create --name tmp ghcr.io/limekana/nba-fantasy-analytics-engine:latest \
-  && docker cp tmp:/app/config ./ && docker rm tmp
-
-alias nba='docker run --rm -v "$PWD/config:/app/config" -v "$PWD/data:/app/data" \
-  -v "$PWD/outputs:/app/outputs" ghcr.io/limekana/nba-fantasy-analytics-engine:latest'
-
-nba check-config
-nba data-help
-```
-
-`config/` is bind-mounted, so editing `config/assumptions.yaml` when news breaks
-takes effect on the next command — no rebuild. Everything except `ingest` and
-`verify-league` runs fully offline, which is what you want at a draft table.
-
-Or with compose: `docker compose run --rm engine build-board`.
-
-## Quick start (local Python)
-
-```bash
-pip install -r requirements.txt
-
-python -m src.cli check-config     # validate config, show resolved scoring rules
-python -m src.cli scoring-check    # reference stat lines to check against Sleeper
-python -m src.cli data-help        # where to get data, and the exact CSV format
-python -m src.cli demo             # full pipeline on synthetic data, no network
-python -m src.cli backtest         # validate the model against naive baselines
-pytest -q                          # 260 tests
-```
-
-`demo` writes `outputs/SYNTHETIC_draft_board.{csv,html}`. **The synthetic board
-is fictional** — generated players, not real ones — and is labelled as such in
-every output. It exists to prove the pipeline works, not to draft from.
-
-### With real data
-
-```bash
-pip install nba_api
-python -m src.cli ingest --season 2025-26 --source nba_api
-python -m src.cli ingest --season 2024-25 --source nba_api
-python -m src.cli ingest --season 2023-24 --source nba_api
-
-python -m src.cli build-board --players data/external/players.csv \
-                              --schedule data/external/schedule_2026-27.csv
-```
-
-No API access? Drop any CSV into `data/raw/<season>/` — column names are mapped
-automatically from Basketball Reference / Kaggle / nba_api spellings.
-
-### On draft day
-
-```bash
-# who is likely to reach each of your picks
-python -m src.cli availability --slot 4
-
-# on the clock at pick 17
-python -m src.cli draft --pick 17 --slot 4 --drafted drafted.txt --roster PG,C
-```
-
-The assistant always shows its arithmetic — never a bare "pick this player".
-
----
+| Where | Command |
+|---|---|
+| Windows PowerShell | `.\scripts\release.ps1 v0.1.0` |
+| macOS / Linux / Git Bash | `./scripts/release.sh v0.1.0` |
+| Any browser, incl. phone | GitHub → Actions → Release → Run workflow |
 
 ## Is the 37% rule right for Lock-In? No — and the code shows why
 

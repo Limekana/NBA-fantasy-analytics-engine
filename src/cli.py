@@ -264,6 +264,94 @@ def cmd_ingest(args) -> int:
     return 0
 
 
+def cmd_fetch_players(args) -> int:
+    """Download player metadata (age, position, injury status) from Sleeper.
+
+    Ages drive the age curve and the availability baseline; positions drive
+    positional scarcity. Game logs carry neither, so without this the model
+    defaults everyone to age 27 and says so in assumption_notes.
+    """
+    from src.config import EXTERNAL_DIR
+    from src.ingestion.sleeper_source import SleeperSource
+
+    _print_header("FETCH PLAYER METADATA FROM SLEEPER")
+    print("\nPublic endpoint, no API key needed. Payload is ~5MB, give it a moment.\n")
+    try:
+        players = SleeperSource().fetch_players()
+    except Exception as exc:  # noqa: BLE001
+        print(f"FAILED: {type(exc).__name__}: {exc}")
+        print("\nThis needs internet access to api.sleeper.app.")
+        print("You can skip it - the model still runs, but without ages or positions.")
+        return 1
+
+    EXTERNAL_DIR.mkdir(parents=True, exist_ok=True)
+    destination = EXTERNAL_DIR / "players.csv"
+    players.to_csv(destination, index=False)
+    on_team = int(players["team"].notna().sum()) if "team" in players.columns else 0
+    print(f"Wrote {len(players):,} players ({on_team:,} currently on an NBA roster)")
+    print(f"  -> {destination}")
+    print("\n`build-board` and `backtest` will pick this up automatically.")
+    return 0
+
+
+def cmd_fetch_schedule(args) -> int:
+    """Download the NBA schedule, which drives games-per-fantasy-week.
+
+    This is the highest-leverage optional input: in Lock-In, a player on a
+    4-game-week-heavy schedule is worth strictly more than an identical player
+    who is not, and without this the model falls back to historical cadence.
+    """
+    from src.config import EXTERNAL_DIR
+    from src.ingestion.nba_api_source import NBAScheduleSource
+
+    season = args.season
+    _print_header(f"FETCH {season} SCHEDULE")
+    try:
+        schedule = NBAScheduleSource().fetch_schedule(season)
+    except Exception as exc:  # noqa: BLE001
+        print(f"\nFAILED: {type(exc).__name__}: {exc}")
+        print("\nNeeds `pip install nba_api` and internet access to stats.nba.com.")
+        print("If the schedule is not published yet, skip it - the model falls back")
+        print("to historical weekly cadence and flags that as an assumption.")
+        return 1
+
+    EXTERNAL_DIR.mkdir(parents=True, exist_ok=True)
+    destination = EXTERNAL_DIR / f"schedule_{season}.csv"
+    schedule.to_csv(destination, index=False)
+    print(f"\nWrote {len(schedule):,} games -> {destination}")
+    print("\n`build-board` will pick this up automatically.")
+    return 0
+
+
+def _auto_discover(cfg, explicit_players, explicit_schedule):
+    """Find players.csv / schedule_*.csv in data/external/ unless overridden.
+
+    Beginners should not have to remember two --flags on every run, and the
+    files always land in the same place because fetch-players and fetch-schedule
+    put them there.
+    """
+    external = cfg.paths["external"]
+    players_path = Path(explicit_players) if explicit_players else external / "players.csv"
+    players = None
+    if players_path.exists():
+        players = pd.read_csv(players_path)
+        print(f"  using player metadata: {players_path}")
+
+    schedule = None
+    if explicit_schedule:
+        schedule_path = Path(explicit_schedule)
+    else:
+        season = cfg.league.raw.get("meta", {}).get("season", "2026-27")
+        candidates = sorted(external.glob(f"schedule_{season}*.csv")) or sorted(external.glob("schedule_*.csv"))
+        schedule_path = candidates[-1] if candidates else None
+    if schedule_path and Path(schedule_path).exists():
+        schedule = pd.read_csv(schedule_path)
+        schedule["game_date"] = pd.to_datetime(schedule["game_date"])
+        print(f"  using schedule: {schedule_path}")
+
+    return players, schedule
+
+
 def cmd_demo(args) -> int:
     """Generate synthetic data and run the whole pipeline on it.
 
@@ -292,10 +380,7 @@ def cmd_build_board(args) -> int:
     cfg = load_config()
     _print_header("BUILD DRAFT BOARD")
     seasons = args.seasons or ["2025-26", "2024-25", "2023-24"]
-    players = pd.read_csv(args.players) if args.players else None
-    schedule = pd.read_csv(args.schedule) if args.schedule else None
-    if schedule is not None:
-        schedule["game_date"] = pd.to_datetime(schedule["game_date"])
+    players, schedule = _auto_discover(cfg, args.players, args.schedule)
     return _run_and_report(cfg, seasons, players=players, schedule=schedule, verbose=args.verbose)
 
 
@@ -438,7 +523,8 @@ def cmd_backtest(args) -> int:
         print(f"\n{exc}")
         return 1
 
-    players = pd.read_csv(args.players) if args.players else derive_players(logs)
+    discovered, _schedule = _auto_discover(cfg, args.players, None)
+    players = discovered if discovered is not None else derive_players(logs)
     if "position" not in logs.columns and "position" in players.columns:
         logs = logs.merge(players[["player_id", "position"]], on="player_id", how="left")
     scored = ScoringEngine(cfg.scoring).score_dataframe(logs)
@@ -620,6 +706,16 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--source", default="nba_api", choices=["nba_api", "csv"])
     ingest.set_defaults(func=cmd_ingest)
 
+    sub.add_parser(
+        "fetch-players", help="download player ages/positions from Sleeper (needs internet)"
+    ).set_defaults(func=cmd_fetch_players)
+
+    fetch_sched = sub.add_parser(
+        "fetch-schedule", help="download the NBA schedule (needs internet)"
+    )
+    fetch_sched.add_argument("--season", default="2026-27")
+    fetch_sched.set_defaults(func=cmd_fetch_schedule)
+
     demo = sub.add_parser("demo", help="run the full pipeline on synthetic data (no network)")
     demo.add_argument("--seasons", nargs="*", help="default: three seasons, so backtest runs")
     demo.add_argument("--players", type=int, default=180)
@@ -628,8 +724,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     board = sub.add_parser("build-board", help="build the draft board from data/raw/")
     board.add_argument("--seasons", nargs="*", help="defaults to the last three seasons")
-    board.add_argument("--players", help="optional player metadata CSV (age, position)")
-    board.add_argument("--schedule", help="optional 2026-27 schedule CSV")
+    board.add_argument("--players", help="player metadata CSV (default: data/external/players.csv)")
+    board.add_argument("--schedule", help="schedule CSV (default: data/external/schedule_*.csv)")
     board.add_argument("--verbose", action="store_true")
     board.set_defaults(func=cmd_build_board)
 
