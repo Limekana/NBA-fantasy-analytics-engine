@@ -658,14 +658,24 @@ def cmd_backtest(args) -> int:
         except ValueError as exc:
             print(f"  could not run: {exc}")
 
-        print("\n\nIF YOU CANNOT FIX IT BEFORE THE DRAFT")
-        print("  Set this in config/model.yaml and rebuild the board:")
-        print("      projection:")
-        print("        method: last_season")
-        print("  That swaps the projection for the baseline that just beat it, while")
-        print("  keeping Lock-In valuation, distributions, games-played, schedule and")
-        print("  risk - none of which the baseline provides on its own. The projection")
-        print("  layer and the Lock-In layer are independent.")
+        print("\n\nWHICH METHOD TO SET")
+        print("  config/model.yaml -> projection.method")
+        print()
+        print("    blend         last season's rates, KEEPING the age curve and")
+        print("                  shrinkage. Start here if 'last_season_only' is the")
+        print("                  offender but no_shrinkage/no_age_curve are not.")
+        print("    last_season   last season's rates, dropping age curve AND")
+        print("                  shrinkage too. Use only if those also show up as")
+        print("                  hurting in the table above.")
+        print("    model         the multi-season blend (current default).")
+        print()
+        print("  Whichever you pick, you keep Lock-In valuation, distributions, the")
+        print("  games-played model, schedule and risk on top. None of those come")
+        print("  from the baseline, and none are invalidated by using a simpler")
+        print("  projection - the two layers are independent.")
+        print()
+        print("  Re-run `backtest --diagnose` after changing it to confirm the gap")
+        print("  actually closed.")
 
     # --- 4. optional weight tuning ---
     if args.tune:
@@ -743,8 +753,13 @@ def _suggest_fix(variant: str) -> None:
     advice = {
         "last_season_only": (
             "    The multi-season blend is the problem: older seasons are stale.\n"
-            "    In config/model.yaml set season_weights to weight last season\n"
-            "    much more heavily, or set projection.method: last_season."
+            "    In config/model.yaml set:\n"
+            "        projection:\n"
+            "          method: blend\n"
+            "    That uses last season's rates only, while KEEPING the age curve\n"
+            "    and shrinkage. Prefer it over method: last_season, which also\n"
+            "    drops those two - check the no_shrinkage row above before you\n"
+            "    throw them away."
         ),
         "no_age_curve": (
             "    The age curve is hurting. It is an assumed shape, not a fitted\n"

@@ -259,7 +259,14 @@ def config_with_overrides(overrides: Mapping[str, Any], base: AppConfig | None =
 
     def deep_merge(target: dict, patch: Mapping[str, Any]) -> dict:
         for key, value in patch.items():
-            if isinstance(value, Mapping) and isinstance(target.get(key), dict):
+            # An EMPTY mapping means "clear this key". Recursing into it would
+            # merge nothing and leave the original untouched, which silently
+            # turns an override into a no-op - and made an ablation study
+            # report that a component had zero effect when it had never
+            # actually been switched off.
+            if isinstance(value, Mapping) and not value:
+                target[key] = {}
+            elif isinstance(value, Mapping) and isinstance(target.get(key), dict):
                 deep_merge(target[key], value)
             else:
                 target[key] = value

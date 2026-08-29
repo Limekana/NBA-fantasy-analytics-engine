@@ -87,3 +87,21 @@ def test_position_eligibility_covers_every_position(cfg):
     for position in ("PG", "SG", "SF", "PF", "C"):
         assert position in cfg.league.position_eligibility
         assert "UTIL" in cfg.league.position_eligibility[position]
+
+
+def test_empty_dict_override_clears_rather_than_no_ops():
+    """An empty mapping means "clear this key".
+
+    Recursing into it merges nothing and leaves the original in place, which
+    turns an override into a silent no-op. That bug made an ablation study report
+    a component as having zero effect when it had never been switched off.
+    """
+    cleared = config_with_overrides({"model": {"projection": {"age_curve": {}}}})
+    assert cleared.model["projection"]["age_curve"] == {}
+
+
+def test_non_empty_dict_override_still_merges():
+    """Partial overrides must keep their deep-merge behaviour."""
+    merged = config_with_overrides({"league": {"scoring": {"points": 1.0}}})
+    assert merged.scoring.stat_weights["points"] == 1.0
+    assert merged.scoring.stat_weights["rebounds"] == 1      # untouched

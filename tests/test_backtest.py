@@ -353,3 +353,45 @@ def test_last_season_method_skips_the_age_curve(cfg, multi_season):
     assert any("last_season" in p.assumption_notes for p in projections)
     assert not any("age" in p.assumption_notes and "curve factor" in p.assumption_notes
                    for p in projections)
+
+
+def test_projection_variant_replaces_rather_than_merges(cfg):
+    """season_weights must be REPLACED wholesale.
+
+    Deep-merging {"2025-26": 1.0} into {"2025-26": 0.6, "2024-25": 0.3,
+    "2023-24": 0.1} leaves the older seasons in place, so a variant labelled
+    "last season only" silently tests 1.0/0.3/0.1 instead - understating how much
+    the multi-season blend costs.
+    """
+    from src.backtest import projection_variant
+
+    variant = projection_variant(cfg, season_weights={"2025-26": 1.0})
+    assert variant.model["projection"]["season_weights"] == {"2025-26": 1.0}
+    # And the original must be untouched.
+    assert len(cfg.model["projection"]["season_weights"]) == 3
+
+
+def test_projection_variant_does_not_mutate_the_base(cfg):
+    from src.backtest import projection_variant
+
+    before = dict(cfg.model["projection"]["season_weights"])
+    projection_variant(cfg, season_weights={"2020-21": 1.0}, shrinkage_games_k=0)
+    assert cfg.model["projection"]["season_weights"] == before
+
+
+def test_age_curve_ablation_actually_changes_the_result(cfg, multi_season):
+    """The regression guard: this ablation previously tested nothing at all."""
+    from src.backtest import projection_variant
+
+    players, scored = multi_season
+    # Give players real, varied ages so the curve has something to act on.
+    aged = players.copy()
+    aged["age"] = [20 + (i % 18) for i in range(len(aged))]
+
+    full, _ = backtest_projections(scored, aged, cfg, "2025-26")
+    flat, _ = backtest_projections(
+        scored, aged, projection_variant(cfg, age_curve={}), "2025-26"
+    )
+    a = next(m for m in full if m.name == "model")
+    b = next(m for m in flat if m.name == "model")
+    assert a.mae != b.mae, "clearing the age curve had no effect - ablation is broken"

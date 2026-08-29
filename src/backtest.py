@@ -379,16 +379,8 @@ def tune_projection_weights(
         season_weights = {season: float(w) for season, w in zip(ordered_prior, usable)}
 
         for shrinkage in shrinkage_values:
-            candidate = config_with_overrides(
-                {
-                    "model": {
-                        "projection": {
-                            "season_weights": season_weights,
-                            "shrinkage_games_k": float(shrinkage),
-                        }
-                    }
-                },
-                base=cfg,
+            candidate = projection_variant(
+                cfg, season_weights=season_weights, shrinkage_games_k=float(shrinkage)
             )
             try:
                 metrics, _ = backtest_projections(scored_logs, players, candidate, target_season)
@@ -475,6 +467,30 @@ def bootstrap_spearman_difference(
     }
 
 
+def projection_variant(cfg, **projection_overrides):
+    """Config with projection keys REPLACED wholesale, not deep-merged.
+
+    Deep-merging is right for partial overrides but wrong here. Passing
+    ``season_weights={"2025-26": 1.0}`` through a merge leaves the older seasons
+    in place at their original weights, so a variant labelled "last season only"
+    quietly tests something else entirely - and the ablation understates how much
+    the multi-season blend is costing.
+    """
+    import copy
+
+    from src.config import AppConfig
+
+    model = copy.deepcopy(dict(cfg.model))
+    model.setdefault("projection", {}).update(projection_overrides)
+    return AppConfig(
+        league=cfg.league,
+        model=model,
+        assumptions=cfg.assumptions,
+        sources=cfg.sources,
+        paths=dict(cfg.paths),
+    )
+
+
 # Each ablation turns ONE piece of the model off. Comparing them against the
 # full model shows which components earn their place and which are adding noise.
 ABLATIONS: dict[str, dict] = {
@@ -531,14 +547,9 @@ def diagnose_projection(
 
     full = score_variant("FULL MODEL", cfg)
 
-    score_variant("no_age_curve", config_with_overrides(ABLATIONS["no_age_curve"], base=cfg))
-    score_variant("no_shrinkage", config_with_overrides(ABLATIONS["no_shrinkage"], base=cfg))
-    score_variant(
-        "last_season_only",
-        config_with_overrides(
-            {"model": {"projection": {"season_weights": {most_recent: 1.0}}}}, base=cfg
-        ),
-    )
+    score_variant("no_age_curve", projection_variant(cfg, age_curve={}))
+    score_variant("no_shrinkage", projection_variant(cfg, shrinkage_games_k=0))
+    score_variant("last_season_only", projection_variant(cfg, season_weights={most_recent: 1.0}))
     score_variant("no_bonus_projection", cfg, include_bonus=False)
 
     frame = pd.DataFrame(rows)
