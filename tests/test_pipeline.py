@@ -701,11 +701,11 @@ def test_adp_template_names_match_the_board_exactly(tmp_path):
         {"player_name": "P.J. Washington", "model_rank": 3},
     ])
 
-    # A template is the board's own names plus an empty adp column.
+    # A template is the board's own names plus an adp column the user fills in.
+    # Built as an object column: pandas >=3 types a `""` column as `str` and
+    # refuses a float assignment into it.
     template = board[["player_name"]].copy()
-    template["adp"] = ""
-    template.loc[0, "adp"] = 1.2
-    template.loc[1, "adp"] = 2.4          # row 2 deliberately left blank
+    template["adp"] = pd.Series([1.2, 2.4, None], dtype="object")   # row 3 left blank
     path = tmp_path / "adp_template.csv"
     template.to_csv(path, index=False)
 
