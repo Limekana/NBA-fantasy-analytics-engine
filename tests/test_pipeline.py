@@ -413,3 +413,170 @@ def test_directory_with_no_usable_game_logs_raises_clearly(tmp_path, synthetic):
 
     with pytest.raises(FileNotFoundError, match="No usable game-log files"):
         CSVSource(tmp_path).fetch_game_logs("2025-26")
+
+
+# =========================================================================
+# External player metadata lives in a DIFFERENT ID SPACE to the game logs
+# =========================================================================
+# Sleeper exports `sleeper_id`; nba_api game logs carry stats.nba.com ids.
+# Merging the two on `player_id` raised KeyError in real use, and would have
+# silently produced all-NaN metadata if the column had merely been renamed.
+
+def sleeper_style_players(names):
+    """A players.csv exactly as `fetch-players` writes it: no player_id column."""
+    return pd.DataFrame([
+        {
+            "sleeper_id": str(9000 + i),
+            "player_name": name,
+            "team": "BOS",
+            "position": ["PG", "SG", "SF", "PF", "C"][i % 5],
+            "positions": "PG",
+            "age": 24 + (i % 12),
+            "injury_status": None,
+            "years_experience": i % 8,
+            "status": "Active",
+        }
+        for i, name in enumerate(names)
+    ])
+
+
+def test_sleeper_metadata_without_player_id_does_not_raise(synthetic):
+    """The exact failure: KeyError: "['player_id'] not in index"."""
+    from src.pipeline import derive_players
+
+    players, logs = synthetic
+    external = sleeper_style_players(sorted(logs["player_name"].unique()))
+    assert "player_id" not in external.columns
+
+    table = derive_players(logs, external)
+    assert "player_id" in table.columns
+    assert table["age"].notna().any()
+
+
+def test_metadata_is_keyed_on_the_game_logs_ids(synthetic):
+    """Everything downstream indexes on the logs' player_id, so the reconciled
+    table must carry those ids - not Sleeper's."""
+    from src.pipeline import derive_players
+
+    players, logs = synthetic
+    external = sleeper_style_players(sorted(logs["player_name"].unique()))
+    table = derive_players(logs, external)
+    assert set(table["player_id"]) <= set(logs["player_id"])
+
+
+@pytest.mark.parametrize(
+    "log_name,metadata_name",
+    [
+        ("Nikola Jokić", "Nikola Jokic"),            # accent in one source only
+        ("Nikola Jokic", "Nikola Jokić"),            # ...and the other way round
+        ("Jaren Jackson Jr.", "Jaren Jackson"),      # suffix present/absent
+        ("Shai Gilgeous-Alexander", "Shai Gilgeous Alexander"),   # hyphen
+        ("P.J. Washington", "PJ Washington"),        # punctuated initials
+        ("Luka Dončić", "Luka Doncic"),
+    ],
+)
+def test_metadata_joins_across_real_name_variants(synthetic, log_name, metadata_name):
+    """The names genuinely differ between nba_api and Sleeper. Matching has to
+    survive accents, suffixes, hyphens and punctuation or the metadata is lost."""
+    from src.pipeline import derive_players
+
+    _players, logs = synthetic
+    logs = logs.copy()
+    target = sorted(logs["player_name"].unique())[0]
+    logs.loc[logs["player_name"] == target, "player_name"] = log_name
+
+    external = sleeper_style_players([metadata_name])
+    table = derive_players(logs, external)
+
+    row = table[table["player_name"] == log_name]
+    assert len(row) == 1
+    assert pd.notna(row["age"].iloc[0]), f"{log_name!r} failed to match {metadata_name!r}"
+
+
+def test_unmatched_players_survive_with_missing_metadata(synthetic):
+    """A player absent from the metadata must keep their row, not vanish."""
+    from src.pipeline import derive_players
+
+    players, logs = synthetic
+    names = sorted(logs["player_name"].unique())
+    external = sleeper_style_players(names[:3])          # only three of them
+
+    table = derive_players(logs, external)
+    assert len(table) == logs["player_id"].nunique()     # nobody dropped
+    assert table["age"].notna().sum() == 3
+
+
+def test_low_match_rate_is_reported_as_a_warning(cfg, tmp_path, synthetic):
+    """Silent metadata failure is the dangerous case - it degrades every
+    projection while looking like it worked."""
+    from src.pipeline import run_pipeline
+
+    players, logs = synthetic
+    directory = tmp_path / "2025-26"
+    directory.mkdir(parents=True)
+    logs.to_csv(directory / "logs.csv", index=False)
+
+    external = sleeper_style_players(["Nobody Matches This", "Nor This One"])
+    result = run_pipeline(cfg, ["2025-26"], raw_root=tmp_path, players=external)
+    assert any("matched the supplied metadata" in w for w in result.warnings)
+
+
+def test_duplicate_names_prefer_the_rostered_player(synthetic):
+    """Two players share a normalised name; the one on a team should win."""
+    from src.pipeline import derive_players
+
+    players, logs = synthetic
+    name = sorted(logs["player_name"].unique())[0]
+    external = pd.DataFrame([
+        {"sleeper_id": "1", "player_name": name, "team": None,
+         "position": "C", "age": 41.0, "status": "Inactive"},
+        {"sleeper_id": "2", "player_name": name, "team": "BOS",
+         "position": "PG", "age": 24.0, "status": "Active"},
+    ])
+    table = derive_players(logs, external)
+    row = table[table["player_name"] == name].iloc[0]
+    assert row["age"] == 24.0
+    assert row["position"] == "PG"
+
+
+def test_pipeline_runs_with_sleeper_metadata_end_to_end(cfg, tmp_path, synthetic):
+    from src.pipeline import run_pipeline
+
+    players, logs = synthetic
+    directory = tmp_path / "2025-26"
+    directory.mkdir(parents=True)
+    logs.to_csv(directory / "logs.csv", index=False)
+
+    external = sleeper_style_players(sorted(logs["player_name"].unique()))
+    result = run_pipeline(cfg, ["2025-26"], raw_root=tmp_path, players=external)
+    assert not result.board.empty
+    assert result.board["position"].notna().any()
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        ("Nikola Jokić", "Nikola Jokic"),
+        ("Luka Dončić", "Luka Doncic"),
+        ("Shai Gilgeous-Alexander", "Shai Gilgeous Alexander"),
+        ("Karl-Anthony Towns", "Karl Anthony Towns"),
+        ("Kentavious Caldwell-Pope", "Kentavious Caldwell Pope"),
+        ("P.J. Washington", "PJ Washington"),
+        ("De'Aaron Fox", "DeAaron Fox"),
+        ("Jaren Jackson Jr.", "Jaren Jackson"),
+        ("Michael Porter Jr.", "Michael Porter"),
+    ],
+)
+def test_name_normalisation_matches_real_source_variants(left, right):
+    """Hyphens must normalise to a space while periods and apostrophes vanish.
+
+    Deleting hyphens outright turned "Gilgeous-Alexander" into
+    "gilgeousalexander", which then failed to match "Gilgeous Alexander" - a
+    silent metadata loss on one of the most valuable players on the board.
+    """
+    assert normalise_name(left) == normalise_name(right)
+
+
+def test_name_normalisation_keeps_different_players_apart():
+    assert normalise_name("Jaylen Brown") != normalise_name("Jalen Brown")
+    assert normalise_name("Marcus Morris") != normalise_name("Markieff Morris")

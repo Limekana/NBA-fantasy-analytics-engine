@@ -524,9 +524,14 @@ def cmd_backtest(args) -> int:
         return 1
 
     discovered, _schedule = _auto_discover(cfg, args.players, None)
-    players = discovered if discovered is not None else derive_players(logs)
+    # derive_players reconciles external metadata onto the game logs' own ids;
+    # the two sources do not share an id space, so this must not be a plain merge.
+    players = derive_players(logs, discovered)
     if "position" not in logs.columns and "position" in players.columns:
-        logs = logs.merge(players[["player_id", "position"]], on="player_id", how="left")
+        logs = logs.merge(
+            players[["player_id", "position"]].drop_duplicates("player_id"),
+            on="player_id", how="left",
+        )
     scored = ScoringEngine(cfg.scoring).score_dataframe(logs)
 
     synthetic = bool(scored["is_synthetic"].any()) if "is_synthetic" in scored.columns else False

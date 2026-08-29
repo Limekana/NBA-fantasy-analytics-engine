@@ -40,7 +40,18 @@ def normalise_name(name: str) -> str:
     text = unicodedata.normalize("NFKD", str(name))
     text = "".join(c for c in text if not unicodedata.combining(c))
     text = text.lower().strip()
-    text = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b\.?", "", text)
+
+    # Hyphens become spaces, but periods and apostrophes are deleted. The
+    # distinction matters and is not cosmetic:
+    #   "Gilgeous-Alexander" vs "Gilgeous Alexander"  -> hyphen must be a space
+    #   "P.J. Washington"    vs "PJ Washington"       -> periods must vanish
+    #   "De'Aaron Fox"       vs "DeAaron Fox"         -> apostrophes must vanish
+    # Deleting the hyphen instead produced "gilgeousalexander", which silently
+    # failed to match a top-of-the-draft player.
+    text = re.sub(r"[-\u2010-\u2015]", " ", text)
+    text = re.sub(r"[.'\u2019`]", "", text)
+
+    text = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b", "", text)
     text = re.sub(r"[^a-z0-9 ]", "", text)
     return re.sub(r"\s+", " ", text).strip()
 
