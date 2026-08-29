@@ -506,6 +506,7 @@ def diagnose_projection(
     players: pd.DataFrame,
     cfg,
     target_season: str,
+    min_games: int = 20,
 ) -> pd.DataFrame:
     """Ablation study: switch each model component off and see what happens.
 
@@ -526,7 +527,9 @@ def diagnose_projection(
     def score_variant(label: str, variant_cfg, include_bonus: bool = True) -> float | None:
         try:
             metrics, _ = backtest_projections(
-                scored_logs, players, variant_cfg, target_season, include_bonus=include_bonus
+                scored_logs, players, variant_cfg, target_season,
+                min_games_prior=min_games, min_games_target=min_games,
+                include_bonus=include_bonus,
             )
         except ValueError:
             return None

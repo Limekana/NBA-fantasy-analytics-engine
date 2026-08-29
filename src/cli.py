@@ -578,10 +578,15 @@ def cmd_backtest(args) -> int:
         print("  UNVALIDATED until this passes.")
         return 0
 
+    if args.min_games != 20:
+        print(f"\n  (min_games={args.min_games}: small-sample players included)")
     print(f"\nTraining on seasons before {target}; predicting {target}.")
     print("Scored on rank correlation, because drafting is a ranking problem.\n")
     try:
-        metrics, comparison = backtest_projections(scored, players, cfg, target)
+        metrics, comparison = backtest_projections(
+            scored, players, cfg, target,
+            min_games_prior=args.min_games, min_games_target=args.min_games,
+        )
     except ValueError as exc:
         print(f"  SKIPPED: {exc}")
         return 0
@@ -615,6 +620,28 @@ def cmd_backtest(args) -> int:
         print("DIAGNOSIS")
         print("-" * 72)
 
+        from src.pipeline import data_health
+
+        health = data_health(logs, players)
+        print("\nMetadata actually reaching the model")
+        print(f"  players in game logs   {health['players_in_logs']}")
+        print(f"  with a real age        {health['with_age']}  "
+              f"({health['distinct_ages']} distinct values)")
+        print(f"  with a position        {health['with_position']}  "
+              f"{health['distinct_positions'][:8]}")
+        if health["with_age"] == 0:
+            print("\n  >>> NO AGES. Every player defaults to 27, so the age curve")
+            print("      applies one identical factor and CANNOT change any ranking.")
+            print("      A 0.0000 reading for no_age_curve below means 'not tested',")
+            print("      not 'no effect'. Run `fetch-players` and re-run this.")
+        elif health["with_age"] < health["players_in_logs"] * 0.5:
+            print(f"\n  >>> Only {health['with_age']} of {health['players_in_logs']} "
+                  "players have an age.")
+            print("      The age curve is being applied to a minority of the board.")
+        if health["with_position"] == 0:
+            print("\n  >>> NO POSITIONS. Shrinkage pulls toward a positional mean")
+            print("      that does not exist, and positional scarcity is inoperative.")
+
         print("\nIs the gap real, or sampling noise?")
         print("Resampling players 2,000 times and re-scoring both methods.\n")
         boot = bootstrap_spearman_difference(comparison)
@@ -640,7 +667,9 @@ def cmd_backtest(args) -> int:
         print("Each row switches ONE piece off. A positive `removing_helps_by`")
         print("means the model scores BETTER without that component.\n")
         try:
-            ablation = diagnose_projection(scored, players, cfg, target)
+            ablation = diagnose_projection(
+                scored, players, cfg, target, min_games=args.min_games
+            )
             print(ablation.to_string(index=False))
 
             hurting = ablation[ablation["removing_helps_by"] > 0.002]
@@ -767,10 +796,22 @@ def _suggest_fix(variant: str) -> None:
             "    soften the decline at the older ages."
         ),
         "no_shrinkage": (
-            "    Shrinkage toward the positional mean is hurting - usually because\n"
-            "    position data is missing or wrong, so the 'mean' is meaningless.\n"
-            "    Check your players.csv matched (build-board warns if it did not),\n"
-            "    or set projection.shrinkage_games_k: 0."
+            "    Shrinkage toward the positional mean is costing you on the players\n"
+            "    this backtest can see - but READ THE CAVEAT before setting it to 0.\n"
+            "\n"
+            "    The backtest only scores players with >= 20 games in BOTH the prior\n"
+            "    and target seasons. Shrinkage exists to stop an 8-game breakout\n"
+            "    ranking top-20, and those players are excluded here by construction,\n"
+            "    so this measurement is blind to the thing shrinkage protects against.\n"
+            "\n"
+            "    REDUCE it rather than removing it. With k=20 and a typical 65-game\n"
+            "    season the prior gets ~24% weight, which is heavy for an established\n"
+            "    player. Try:\n"
+            "        projection:\n"
+            "          shrinkage_games_k: 8\n"
+            "    Then confirm with:  backtest --diagnose --min-games 5\n"
+            "    which lowers the threshold so small-sample players are included and\n"
+            "    shrinkage is judged on the players it actually exists for."
         ),
         "no_bonus_projection": (
             "    The bonus projection is adding noise. Its tail exponents are a\n"
@@ -878,6 +919,10 @@ def build_parser() -> argparse.ArgumentParser:
                       help="grid-search projection weights (handoff sec.6)")
     back.add_argument("--diagnose", action="store_true",
                       help="find out WHY the model is losing to a baseline")
+    back.add_argument("--min-games", type=int, default=20,
+                      help="minimum games to score a player (default 20). Lower it "
+                           "to include small-sample players, which is the only way "
+                           "to see what shrinkage is actually buying you.")
     back.set_defaults(func=cmd_backtest)
 
     sub.add_parser("data-help", help="where to get data and what format it needs").set_defaults(func=cmd_data_help)

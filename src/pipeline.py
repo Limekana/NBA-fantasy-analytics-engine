@@ -124,6 +124,42 @@ def reconcile_players(base: pd.DataFrame, external: pd.DataFrame) -> pd.DataFram
     return merged.drop(columns=["name_key"])
 
 
+def data_health(logs: pd.DataFrame, players: pd.DataFrame) -> dict:
+    """How much usable metadata actually reached the model.
+
+    Worth checking explicitly, because the failure is silent: with no ages every
+    player falls back to the default 27, the age curve applies one identical
+    factor to everyone, and it therefore has *zero* effect on rankings while
+    appearing to be switched on. The same goes for positions and shrinkage, which
+    pulls toward a positional mean that is meaningless if positions are missing.
+    """
+    report: dict = {
+        "players_in_logs": int(logs["player_id"].nunique()) if "player_id" in logs else 0,
+        "players_in_table": len(players),
+    }
+
+    if "age" in players.columns:
+        ages = pd.to_numeric(players["age"], errors="coerce")
+        report["with_age"] = int(ages.notna().sum())
+        report["distinct_ages"] = int(ages.dropna().nunique())
+        report["age_min"] = float(ages.min()) if ages.notna().any() else None
+        report["age_max"] = float(ages.max()) if ages.notna().any() else None
+    else:
+        report["with_age"] = 0
+        report["distinct_ages"] = 0
+        report["age_min"] = report["age_max"] = None
+
+    if "position" in players.columns:
+        positions = players["position"].replace("", pd.NA)
+        report["with_position"] = int(positions.notna().sum())
+        report["distinct_positions"] = sorted(str(p) for p in positions.dropna().unique())
+    else:
+        report["with_position"] = 0
+        report["distinct_positions"] = []
+
+    return report
+
+
 def player_match_rate(players: pd.DataFrame) -> tuple[int, int]:
     """(matched, total) players that picked up an age from external metadata."""
     if players.empty or "age" not in players.columns:
@@ -144,6 +180,23 @@ def run_pipeline(
 
     logs = load_seasons(cfg, seasons, raw_root)
     player_table = derive_players(logs, players)
+
+    health = data_health(logs, player_table)
+    if health["with_age"] == 0:
+        warnings.append(
+            "NO AGES reached the model - every player defaults to 27, so the age "
+            "curve applies one identical factor and has no effect on rankings. "
+            "Run `fetch-players`, or supply a players CSV with an `age` column."
+        )
+    elif health["distinct_ages"] <= 1:
+        warnings.append(
+            "All players share the same age, so the age curve cannot discriminate."
+        )
+    if health["with_position"] == 0:
+        warnings.append(
+            "NO POSITIONS reached the model - positional scarcity and shrinkage "
+            "toward the positional mean are both inoperative."
+        )
 
     if players is not None and not players.empty:
         matched, total = player_match_rate(player_table)
