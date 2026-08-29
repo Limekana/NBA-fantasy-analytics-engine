@@ -11,6 +11,25 @@
 # =============================================================================
 
 projection:
+  # Which projection to feed the rest of the pipeline.
+  #
+  #   model         the per-36 blend below: season weights, shrinkage, age curve
+  #   last_season   last season's rates only - no age curve, no shrinkage.
+  #                 The honest "what they did last year" projection.
+  #   blend         last season's rates, but WITH the age curve and shrinkage
+  #                 still applied. Use when the backtest says the multi-season
+  #                 blend is what hurts, but the adjustments still help.
+  #
+  # This exists because the projection layer and the Lock-In layer are
+  # independent. If `python -m src.cli backtest` says the model does not rank
+  # players better than the naive baseline, switch this to `last_season` (or
+  # `blend`) and you keep every other part of the system - Lock-In valuation,
+  # distributions, games-played model, schedule, risk - sitting on top of a
+  # projection that demonstrably ranks at least as well.
+  #
+  # Handoff Rule 5: do not keep complexity that has not earned its place.
+  method: model
+
   # Weight on each prior season when blending per-minute production.
   # Recency-weighted; must be > 0 and are renormalised over available seasons.
   season_weights:

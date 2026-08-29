@@ -96,7 +96,14 @@ def project_players(
         return []
 
     proj_cfg = model_cfg.get("projection", {})
+    method = str(proj_cfg.get("method", "model")).lower()
     season_weights = {str(k): float(v) for k, v in proj_cfg.get("season_weights", {}).items()}
+
+    if method in ("last_season", "blend"):
+        # Recency-only weighting: the most recent season available per player.
+        available_seasons = sorted(per36["season"].astype(str).unique(), reverse=True)
+        if available_seasons:
+            season_weights = {available_seasons[0]: 1.0}
     shrinkage_k = float(proj_cfg.get("shrinkage_games_k", 20))
     age_curve = proj_cfg.get("age_curve", {})
     minutes_cfg = proj_cfg.get("minutes", {})
@@ -142,17 +149,24 @@ def project_players(
                 (w / total_weight) * float(available[s][f"{stat}_per36"]) for s, w in weights.items()
             )
             # Shrink small samples toward the positional mean.
-            target = positional_means.get(position, {}).get(stat, value)
-            value = (total_games * value + shrinkage_k * target) / (total_games + shrinkage_k)
+            if method != "last_season":
+                target = positional_means.get(position, {}).get(stat, value)
+                value = (total_games * value + shrinkage_k * target) / (total_games + shrinkage_k)
             blended[stat] = value
 
         if total_games < shrinkage_k:
             notes.append(f"ASSUMPTION: only {int(total_games)} games of history; shrunk toward {position or 'league'} mean")
 
-        age_factor = _interpolate_curve(age_curve, projected_age)
+        if method == "last_season":
+            # Deliberately no age adjustment: this variant exists to be the
+            # honest, unadorned "what they did last year" projection.
+            age_factor = 1.0
+            notes.append("projection method: last_season (no age or shrinkage adjustment)")
+        else:
+            age_factor = _interpolate_curve(age_curve, projected_age)
+            if abs(age_factor - 1.0) > 0.005:
+                notes.append(f"ASSUMPTION: age {projected_age:.0f} curve factor {age_factor:.3f}")
         blended = {k: v * age_factor for k, v in blended.items()}
-        if abs(age_factor - 1.0) > 0.005:
-            notes.append(f"ASSUMPTION: age {projected_age:.0f} curve factor {age_factor:.3f}")
 
         # --- minutes ---
         historical_minutes = sum(

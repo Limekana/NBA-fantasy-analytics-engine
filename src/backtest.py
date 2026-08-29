@@ -140,6 +140,7 @@ def backtest_projections(
     target_season: str,
     min_games_prior: int = 20,
     min_games_target: int = 20,
+    include_bonus: bool = True,
 ) -> tuple[list[BacktestMetrics], pd.DataFrame]:
     """Walk-forward test: project ``target_season`` using only earlier seasons.
 
@@ -195,7 +196,7 @@ def backtest_projections(
         if profile is None:
             continue
         base = linear_score(projection.projected_stats, engine)
-        bonus = project_bonus_points(profile, projection.projected_stats, engine)
+        bonus = project_bonus_points(profile, projection.projected_stats, engine) if include_bonus else 0.0
         model_rows[projection.player_id] = base + bonus
     model = pd.Series(model_rows, name="model_fp_game")
 
@@ -413,3 +414,136 @@ def tune_projection_weights(
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows).sort_values("spearman", ascending=False).reset_index(drop=True)
+
+
+# =========================================================================
+# Diagnosis - when the model loses to a baseline, find out WHY
+# =========================================================================
+
+def bootstrap_spearman_difference(
+    comparison: pd.DataFrame,
+    model_column: str = "model_fp_game",
+    baseline_column: str = "prior_fp_game",
+    actual_column: str = "actual_fp_game",
+    n_boot: int = 2000,
+    seed: int = 20262027,
+) -> dict:
+    """Is the model-vs-baseline gap real, or sampling noise?
+
+    A raw difference in Spearman is easy to over-read. Both numbers are computed
+    on the *same* players, so resampling players (rather than comparing two
+    independent standard errors) is the right way to ask whether the ordering
+    would survive a different draw of the league.
+
+    Returns the observed difference, a 95% interval, and how often the model wins
+    across resamples. If the interval straddles zero, the two methods are not
+    distinguishable on this much data and preferring either on the basis of this
+    number alone is overfitting to one season.
+    """
+    rng = np.random.default_rng(seed)
+    frame = comparison[[model_column, baseline_column, actual_column]].dropna()
+    n = len(frame)
+    if n < 20:
+        return {"n": n, "observed": np.nan, "insufficient_data": True}
+
+    model = frame[model_column].to_numpy(dtype=float)
+    baseline = frame[baseline_column].to_numpy(dtype=float)
+    actual = frame[actual_column].to_numpy(dtype=float)
+
+    def spearman(x, y):
+        return float(scipy_stats.spearmanr(x, y).statistic)
+
+    observed = spearman(model, actual) - spearman(baseline, actual)
+
+    differences = np.empty(n_boot, dtype=float)
+    for i in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        # A resample can degenerate (all-identical values); skip those draws.
+        try:
+            differences[i] = spearman(model[idx], actual[idx]) - spearman(baseline[idx], actual[idx])
+        except Exception:  # noqa: BLE001
+            differences[i] = np.nan
+
+    differences = differences[np.isfinite(differences)]
+    return {
+        "n": n,
+        "observed": observed,
+        "ci_low": float(np.percentile(differences, 2.5)),
+        "ci_high": float(np.percentile(differences, 97.5)),
+        "p_model_better": float(np.mean(differences > 0)),
+        "insufficient_data": False,
+    }
+
+
+# Each ablation turns ONE piece of the model off. Comparing them against the
+# full model shows which components earn their place and which are adding noise.
+ABLATIONS: dict[str, dict] = {
+    "no_age_curve": {"model": {"projection": {"age_curve": {}}}},
+    "no_shrinkage": {"model": {"projection": {"shrinkage_games_k": 0}}},
+    "last_season_only": {},          # handled specially - needs the season list
+    "no_bonus_projection": {},       # handled specially - a function argument
+}
+
+
+def diagnose_projection(
+    scored_logs: pd.DataFrame,
+    players: pd.DataFrame,
+    cfg,
+    target_season: str,
+) -> pd.DataFrame:
+    """Ablation study: switch each model component off and see what happens.
+
+    A component whose removal IMPROVES the score is actively hurting. That is the
+    thing to find when the model loses to a naive baseline, and it is far more
+    informative than a single aggregate number telling you something is wrong.
+    """
+    from src.config import config_with_overrides
+
+    seasons = sorted(scored_logs["season"].dropna().unique())
+    prior_seasons = [s for s in seasons if s < target_season]
+    if not prior_seasons:
+        raise ValueError(f"no seasons before {target_season} to train on")
+    most_recent = max(prior_seasons)
+
+    rows = []
+
+    def score_variant(label: str, variant_cfg, include_bonus: bool = True) -> float | None:
+        try:
+            metrics, _ = backtest_projections(
+                scored_logs, players, variant_cfg, target_season, include_bonus=include_bonus
+            )
+        except ValueError:
+            return None
+        model = next((m for m in metrics if m.name == "model"), None)
+        baseline = next((m for m in metrics if m.name == "baseline_prior_fp_game"), None)
+        if model is None:
+            return None
+        rows.append(
+            {
+                "variant": label,
+                "spearman": round(model.spearman, 4),
+                "vs_baseline": round(model.spearman - baseline.spearman, 4) if baseline else np.nan,
+                "top25_hit": round(model.top_n_hit_rate.get(25, np.nan), 3),
+                "mae": round(model.mae, 3),
+            }
+        )
+        return model.spearman
+
+    full = score_variant("FULL MODEL", cfg)
+
+    score_variant("no_age_curve", config_with_overrides(ABLATIONS["no_age_curve"], base=cfg))
+    score_variant("no_shrinkage", config_with_overrides(ABLATIONS["no_shrinkage"], base=cfg))
+    score_variant(
+        "last_season_only",
+        config_with_overrides(
+            {"model": {"projection": {"season_weights": {most_recent: 1.0}}}}, base=cfg
+        ),
+    )
+    score_variant("no_bonus_projection", cfg, include_bonus=False)
+
+    frame = pd.DataFrame(rows)
+    if not frame.empty and full is not None:
+        # Positive delta = the model is BETTER without this component.
+        frame["removing_helps_by"] = (frame["spearman"] - full).round(4)
+        frame.loc[frame["variant"] == "FULL MODEL", "removing_helps_by"] = np.nan
+    return frame

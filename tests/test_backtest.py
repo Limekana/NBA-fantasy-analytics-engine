@@ -227,3 +227,129 @@ def test_tuning_grid_evaluates_every_profile(cfg, multi_season):
     assert not grid.empty
     assert set(grid["profile"]) <= set(WEIGHT_PROFILES)
     assert grid["spearman"].is_monotonic_decreasing   # sorted best-first
+
+
+# =========================================================================
+# Diagnosis - when the model loses, find out why
+# =========================================================================
+
+def test_bootstrap_detects_a_genuinely_better_predictor():
+    """A predictor that is actually better must show a positive interval."""
+    from src.backtest import bootstrap_spearman_difference
+
+    rng = np.random.default_rng(5)
+    actual = rng.normal(30, 8, 300)
+    comparison = pd.DataFrame({
+        "actual_fp_game": actual,
+        "model_fp_game": actual + rng.normal(0, 1.0, 300),    # tight
+        "prior_fp_game": actual + rng.normal(0, 6.0, 300),    # loose
+    })
+    result = bootstrap_spearman_difference(comparison, n_boot=400)
+    assert result["observed"] > 0
+    assert result["ci_low"] > 0
+    assert result["p_model_better"] > 0.95
+
+
+def test_bootstrap_straddles_zero_for_equivalent_predictors():
+    """Two equally good predictors must NOT be declared different - this is the
+    guard against reading noise as a finding."""
+    from src.backtest import bootstrap_spearman_difference
+
+    rng = np.random.default_rng(7)
+    actual = rng.normal(30, 8, 300)
+    comparison = pd.DataFrame({
+        "actual_fp_game": actual,
+        "model_fp_game": actual + rng.normal(0, 4.0, 300),
+        "prior_fp_game": actual + rng.normal(0, 4.0, 300),
+    })
+    result = bootstrap_spearman_difference(comparison, n_boot=400)
+    assert result["ci_low"] < 0 < result["ci_high"]
+
+
+def test_bootstrap_reports_insufficient_data():
+    from src.backtest import bootstrap_spearman_difference
+
+    tiny = pd.DataFrame({
+        "actual_fp_game": [1.0, 2.0], "model_fp_game": [1.0, 2.0], "prior_fp_game": [2.0, 1.0],
+    })
+    assert bootstrap_spearman_difference(tiny)["insufficient_data"] is True
+
+
+def test_ablation_runs_every_variant(cfg, multi_season):
+    from src.backtest import diagnose_projection
+
+    players, scored = multi_season
+    frame = diagnose_projection(scored, players, cfg, "2025-26")
+    variants = set(frame["variant"])
+    assert "FULL MODEL" in variants
+    for expected in ("no_age_curve", "no_shrinkage", "last_season_only", "no_bonus_projection"):
+        assert expected in variants
+
+
+def test_ablation_marks_the_full_model_as_the_reference(cfg, multi_season):
+    from src.backtest import diagnose_projection
+
+    players, scored = multi_season
+    frame = diagnose_projection(scored, players, cfg, "2025-26")
+    full = frame[frame["variant"] == "FULL MODEL"].iloc[0]
+    assert pd.isna(full["removing_helps_by"])
+
+
+def test_bonus_ablation_changes_the_projection(cfg, multi_season):
+    """Turning the bonus projection off must actually change the numbers,
+    otherwise the ablation is measuring nothing."""
+    players, scored = multi_season
+    with_bonus, _ = backtest_projections(scored, players, cfg, "2025-26", include_bonus=True)
+    without, _ = backtest_projections(scored, players, cfg, "2025-26", include_bonus=False)
+    a = next(m for m in with_bonus if m.name == "model")
+    b = next(m for m in without if m.name == "model")
+    assert a.mae != b.mae
+
+
+# =========================================================================
+# projection.method - the escape hatch when the model does not earn its place
+# =========================================================================
+
+@pytest.mark.parametrize("method", ["model", "last_season", "blend"])
+def test_every_projection_method_produces_a_board(cfg, tmp_path, multi_season, method):
+    from src.config import config_with_overrides
+    from src.pipeline import run_pipeline
+
+    players, scored = multi_season
+    logs = scored.drop(columns=[c for c in scored.columns if c.startswith("bonus_")], errors="ignore")
+    for season, group in logs.groupby("season"):
+        directory = tmp_path / str(season)
+        directory.mkdir(parents=True, exist_ok=True)
+        group.to_csv(directory / "logs.csv", index=False)
+
+    variant = config_with_overrides({"model": {"projection": {"method": method}}}, base=cfg)
+    result = run_pipeline(variant, sorted(logs["season"].unique()), raw_root=tmp_path, players=players)
+    assert not result.board.empty
+    assert result.board["projected_fp_game"].notna().any()
+
+
+def test_last_season_method_ignores_older_seasons(cfg, multi_season):
+    """The point of the escape hatch: it must genuinely stop blending."""
+    from src.config import config_with_overrides
+    from src.projections import compute_per36, project_players
+
+    players, scored = multi_season
+    per36 = compute_per36(scored)
+
+    variant = config_with_overrides({"model": {"projection": {"method": "last_season"}}}, base=cfg)
+    projections = project_players(per36, players, variant.model, variant.assumptions)
+    assert projections
+    for projection in projections:
+        assert len(projection.seasons_used) <= 1
+
+
+def test_last_season_method_skips_the_age_curve(cfg, multi_season):
+    players, scored = multi_season
+    from src.config import config_with_overrides
+    from src.projections import compute_per36, project_players
+
+    variant = config_with_overrides({"model": {"projection": {"method": "last_season"}}}, base=cfg)
+    projections = project_players(compute_per36(scored), players, variant.model, variant.assumptions)
+    assert any("last_season" in p.assumption_notes for p in projections)
+    assert not any("age" in p.assumption_notes and "curve factor" in p.assumption_notes
+                   for p in projections)

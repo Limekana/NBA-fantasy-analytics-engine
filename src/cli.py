@@ -607,7 +607,67 @@ def cmd_backtest(args) -> int:
                   f"Spearman. ***")
             print("  Investigate before trusting the board. Handoff sec.20.")
 
-    # --- 3. optional weight tuning ---
+    # --- 3. optional diagnosis ---
+    if args.diagnose:
+        from src.backtest import bootstrap_spearman_difference, diagnose_projection
+
+        print("\n" + "-" * 72)
+        print("DIAGNOSIS")
+        print("-" * 72)
+
+        print("\nIs the gap real, or sampling noise?")
+        print("Resampling players 2,000 times and re-scoring both methods.\n")
+        boot = bootstrap_spearman_difference(comparison)
+        if boot.get("insufficient_data"):
+            print(f"  Not enough overlapping players ({boot['n']}) to say.")
+        else:
+            print(f"  players compared      {boot['n']}")
+            print(f"  observed difference   {boot['observed']:+.4f}  (model minus baseline)")
+            print(f"  95% interval          [{boot['ci_low']:+.4f}, {boot['ci_high']:+.4f}]")
+            print(f"  model wins in         {boot['p_model_better']:.0%} of resamples")
+            if boot["ci_low"] <= 0 <= boot["ci_high"]:
+                print("\n  -> The interval straddles zero. On this much data the two are")
+                print("     NOT distinguishable. The model is not proven worse; it is")
+                print("     simply not proven better, which is its own answer: the extra")
+                print("     complexity has not earned its place yet.")
+            elif boot["ci_high"] < 0:
+                print("\n  -> The model is genuinely worse, not unlucky. Act on the")
+                print("     ablation table below.")
+            else:
+                print("\n  -> The model is genuinely better.")
+
+        print("\n\nWhich component is responsible?")
+        print("Each row switches ONE piece off. A positive `removing_helps_by`")
+        print("means the model scores BETTER without that component.\n")
+        try:
+            ablation = diagnose_projection(scored, players, cfg, target)
+            print(ablation.to_string(index=False))
+
+            hurting = ablation[ablation["removing_helps_by"] > 0.002]
+            print("\nREAD THIS AS:")
+            if hurting.empty:
+                print("  No single component is clearly hurting. The gap is spread thin,")
+                print("  which usually means the projection is fine and the baseline is")
+                print("  simply hard to beat - last season's FP/game is a strong predictor.")
+            else:
+                for row in hurting.sort_values("removing_helps_by", ascending=False).itertuples():
+                    print(f"  - Removing '{row.variant}' would gain {row.removing_helps_by:+.4f} Spearman.")
+                best = hurting.sort_values("removing_helps_by", ascending=False).iloc[0]
+                print(f"\n  Biggest offender: {best['variant']}")
+                _suggest_fix(str(best["variant"]))
+        except ValueError as exc:
+            print(f"  could not run: {exc}")
+
+        print("\n\nIF YOU CANNOT FIX IT BEFORE THE DRAFT")
+        print("  Set this in config/model.yaml and rebuild the board:")
+        print("      projection:")
+        print("        method: last_season")
+        print("  That swaps the projection for the baseline that just beat it, while")
+        print("  keeping Lock-In valuation, distributions, games-played, schedule and")
+        print("  risk - none of which the baseline provides on its own. The projection")
+        print("  layer and the Lock-In layer are independent.")
+
+    # --- 4. optional weight tuning ---
     if args.tune:
         from src.backtest import tune_projection_weights
 
@@ -676,6 +736,35 @@ def cmd_verify_league(args) -> int:
     print(f"Sleeper reports {payload.get('total_rosters')} teams "
           f"(config says {cfg.league.teams}).")
     return 0
+
+
+def _suggest_fix(variant: str) -> None:
+    """Concrete next step for whichever component is hurting."""
+    advice = {
+        "last_season_only": (
+            "    The multi-season blend is the problem: older seasons are stale.\n"
+            "    In config/model.yaml set season_weights to weight last season\n"
+            "    much more heavily, or set projection.method: last_season."
+        ),
+        "no_age_curve": (
+            "    The age curve is hurting. It is an assumed shape, not a fitted\n"
+            "    one. Flatten it in config/model.yaml (set every age to 1.0) or\n"
+            "    soften the decline at the older ages."
+        ),
+        "no_shrinkage": (
+            "    Shrinkage toward the positional mean is hurting - usually because\n"
+            "    position data is missing or wrong, so the 'mean' is meaningless.\n"
+            "    Check your players.csv matched (build-board warns if it did not),\n"
+            "    or set projection.shrinkage_games_k: 0."
+        ),
+        "no_bonus_projection": (
+            "    The bonus projection is adding noise. Its tail exponents are a\n"
+            "    documented approximation. Note this affects the RANKING here, but\n"
+            "    bonuses genuinely are worth points, so prefer tuning it over\n"
+            "    removing it if you have time."
+        ),
+    }
+    print(advice.get(variant, "    No specific guidance for this component."))
 
 
 def _find_board(cfg) -> Path | None:
@@ -772,6 +861,8 @@ def build_parser() -> argparse.ArgumentParser:
     back.add_argument("--output", help="write metrics to this CSV")
     back.add_argument("--tune", action="store_true",
                       help="grid-search projection weights (handoff sec.6)")
+    back.add_argument("--diagnose", action="store_true",
+                      help="find out WHY the model is losing to a baseline")
     back.set_defaults(func=cmd_backtest)
 
     sub.add_parser("data-help", help="where to get data and what format it needs").set_defaults(func=cmd_data_help)

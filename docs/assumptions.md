@@ -34,7 +34,7 @@ game logs — if you find one that is not, it is a bug.
 
 | # | Assumption | Where | Notes |
 |---|---|---|---|
-| 6 | Season blend weights 0.60 / 0.30 / 0.10 | `model.yaml → projection.season_weights` | Handoff §6 says these should be **empirically tested, not assumed**. They currently are assumed — see Known Gaps below. |
+| 6 | Season blend weights 0.60 / 0.30 / 0.10 | `model.yaml → projection.season_weights` | Handoff §6 says these should be **empirically tested, not assumed**. Run `backtest --tune` on real data. If the multi-season blend is what hurts, `projection.method: last_season` is the escape hatch. |
 | 7 | Age curve (peak ~27, decline after 30) | `model.yaml → projection.age_curve` | Standard shape, not fitted to this data. |
 | 8 | Availability baseline by age | `model.yaml → games_played.baseline_availability` | Regresses last season's games played toward an age norm rather than trusting it (handoff §7). |
 | 9 | Small samples shrink toward the positional mean (k=20 games) | `model.yaml → projection.shrinkage_games_k` | Protects against 8-game breakouts ranking top-20. |
@@ -52,6 +52,42 @@ game logs — if you find one that is not, it is a bug.
 | 16 | Players without ADP are drafted at their model rank | `src/draft/simulator.py → board_to_players` |
 
 ---
+
+## When the model loses to the baseline
+
+`backtest` may report that the model ranks players no better — or worse — than
+"last season's FP/game". That is a real finding, not a bug, and the system is
+built to surface it rather than hide it (handoff Rule 5).
+
+**Investigate before deciding anything:**
+
+```bash
+python -m src.cli backtest --diagnose
+```
+
+It answers two questions in order:
+
+1. **Is the gap real?** It bootstraps over players and reports a 95% interval on
+   the difference. A gap of ~0.01 Spearman on a few hundred players is usually
+   inside the noise, and the interval will say so. "Not proven better" is a
+   different conclusion from "proven worse", and only the second demands a fix.
+
+2. **Which component is at fault?** It ablates each piece — age curve,
+   shrinkage, multi-season blend, bonus projection — and reports which one the
+   model scores *better* without. That is the thing to change.
+
+**The important structural point:** the projection layer and the Lock-In layer
+are independent. If the simple projection ranks better, use it —
+
+```yaml
+projection:
+  method: last_season
+```
+
+— and you keep the Lock-In valuation, distributions, games-played model,
+schedule and risk scoring on top of it. None of those come from the baseline,
+and none of them are invalidated by the projection being simple. Losing the
+projection contest does not mean losing the board.
 
 ## Known gaps (honest list)
 
