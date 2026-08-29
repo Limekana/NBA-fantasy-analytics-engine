@@ -42,6 +42,13 @@ jobs:
       - name: Backtest
         run: python -m src.cli backtest
 
+      - name: Trade evaluation end to end
+        run: |
+          python -m src.cli trade-dashboard --picks 5 15 --simulations 100
+          python -m src.cli trade --roster "$(python -c "import pandas,glob;print(','.join(pandas.read_csv(sorted(glob.glob('outputs/*draft_board.csv'))[0])['player_name'].head(12)))")" \
+            --give "$(python -c "import pandas,glob;print(pandas.read_csv(sorted(glob.glob('outputs/*draft_board.csv'))[0])['player_name'].iloc[3])")" \
+            --get-pick 20 --simulations 100
+
   docker:
     name: Docker build
     runs-on: ubuntu-latest

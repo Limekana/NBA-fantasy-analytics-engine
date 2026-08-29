@@ -176,6 +176,66 @@ class DraftSimulator:
         result.picked_by_round = by_pick
         return result
 
+    def best_available_curve(
+        self,
+        players: Sequence[DraftPlayer],
+        target_picks: Sequence[int],
+        n_simulations: int | None = None,
+        already_drafted: Sequence[str] = (),
+        start_pick: int = 1,
+    ) -> dict[int, list[str]]:
+        """Who the best player still on the board is, at each of a set of picks.
+
+        ``simulate`` answers "will *this* player last until my pick"; this answers
+        "what will my pick be worth", which is the question a pick trade turns on.
+        Every pick in ``target_picks`` is filled by taking the highest-value
+        player remaining rather than by the opponent model, since that is what a
+        pick is: an option on the best thing left.
+
+        Returns pick number -> the player taken there in each simulation, so the
+        caller can price the pick in whatever currency it cares about.
+        """
+        n_simulations = int(n_simulations or self.cfg.get("n_simulations", 2000))
+        drafted = set(already_drafted)
+        pool_master = [p for p in players if p.player_id not in drafted]
+        targets = sorted(set(int(p) for p in target_picks))
+        if not pool_master or not targets:
+            return {}
+
+        order = snake_pick_order(self.teams, self.rounds)
+        last_target = max(targets)
+        taken_at_target: dict[int, list[str]] = {pick: [] for pick in targets}
+
+        for _ in range(n_simulations):
+            available = list(pool_master)
+            roster_counts: list[dict[str, int]] = [{} for _ in range(self.teams)]
+            manager_types = self._assign_archetypes()
+
+            for overall in range(start_pick, min(len(order), last_target) + 1):
+                if not available:
+                    break
+
+                if overall in taken_at_target:
+                    choice = int(np.argmax([p.value for p in available]))
+                    taken_at_target[overall].append(available[choice].player_id)
+                    available.pop(choice)
+                    continue
+
+                team_index = order[overall - 1]
+                archetype = manager_types[team_index]
+                if self.rng.random() < self.random_rate:
+                    choice = int(self.rng.integers(0, min(len(available), 25)))
+                else:
+                    scores = self._score_candidates(available, archetype, roster_counts[team_index], overall)
+                    choice = int(np.argmin(scores))
+
+                player = available.pop(choice)
+                roster_counts[team_index][player.position] = (
+                    roster_counts[team_index].get(player.position, 0) + 1
+                )
+
+        return taken_at_target
+
 
 def board_to_players(board: pd.DataFrame) -> list[DraftPlayer]:
     """Convert a draft board frame into simulator inputs.

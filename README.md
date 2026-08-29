@@ -459,6 +459,93 @@ python -m src.cli draft --pick 17 --drafted drafted.txt --roster PG,C,SF
 
 ---
 
+## Step 12 — Trades, during and after the draft
+
+Once picks and players start moving, the question changes from *who is best* to
+*does this deal make my team better*. Those are not the same question, and the
+gap between them is where most fantasy trades are lost.
+
+**Adding up the players on each side does not answer it.** Only nine of your
+players score in a given week. A third startable centre is worth a fraction of
+your first, no matter what his projection says. So the tool grades a trade by
+solving your best legal lineup before and after, and reporting the difference.
+
+### The interactive version (recommended)
+
+```powershell
+python -m src.cli trade-dashboard --slot 4
+start outputs\trade_evaluator.html
+```
+
+That builds one HTML file and opens it. It works **offline**, on a phone or a
+laptop, and remembers your roster between visits — so build it once and leave it
+open all season.
+
+Paste your roster into the box (straight from Sleeper, one name per line), then
+click players to build the deal. The verdict updates as you type.
+
+Leave `--slot` off if you have not had the lottery yet; add `--picks 5 15 25` to
+price specific draft picks instead.
+
+### The quick command-line version
+
+Make a `my_roster.txt` in Notepad, one player per line, then:
+
+```powershell
+python -m src.cli trade --roster my_roster.txt --give "Anthony Davis" --get "Tyrese Haliburton"
+```
+
+Several players a side, separated by commas:
+
+```powershell
+python -m src.cli trade --roster my_roster.txt --give "Anthony Davis,Jalen Suggs" --get "Tyrese Haliburton"
+```
+
+Draft picks count too — give the **overall** pick number, not the round:
+
+```powershell
+python -m src.cli trade --roster my_roster.txt --give "Anthony Davis" --get-pick 15 35
+```
+
+Mid-season, tell it how much season is left so the totals mean something:
+
+```powershell
+python -m src.cli trade --roster my_roster.txt --give "..." --get "..." --weeks-left 9
+```
+
+### Reading the answer
+
+| Line | What it means |
+|---|---|
+| **Change per week** | The headline. Points your starting lineup gains or loses. |
+| **Starting lineup** | The talent half of the deal. |
+| **Depth / injury cover** | The insurance half. Negative means you got thinner. |
+| **Raw totals would say** | What naive adding-up would have told you — shown so you can see when fit, not talent, is deciding it. |
+| **Marginal value** | What a week without each player actually costs you. |
+
+**Marginal value is the number to trade on.** A player with a big projection and
+a small marginal value is one you are already covering — he is what you put *in*
+a trade. The list is printed lowest-first for exactly that reason.
+
+**TOO CLOSE TO CALL is a real answer.** The verdict is re-run assuming the
+incoming players are 10% worse than projected and the outgoing ones 10% better.
+If that flips the sign, the model says so instead of inventing confidence it
+does not have. Change the assumption with `--stress 20` if you trust the
+projections less.
+
+Two honest caveats. A pick is priced at the *average* player still available when
+it comes round, which is not a promise — the player who falls to you may not be
+one you want. And absences are priced one at a time, which slightly understates
+what a thin bench costs you when two starters sit in the same week.
+
+**One warning to take seriously.** If your roster cannot fill every starting slot
+— which is normal mid-draft — the tool says so, and every incoming player will
+look enormous, because they are being credited with a whole empty slot. That is
+arithmetically right and practically misleading. Before your roster is full,
+compare picks against each other rather than against a half-built lineup.
+
+---
+
 ## The whole thing, as a checklist
 
 ```powershell
@@ -482,6 +569,10 @@ start outputs\draft_board.html
 # Draft day (offline)
 python -m src.cli availability
 python -m src.cli draft --pick 17 --drafted drafted.txt
+
+# Trades, during the draft and all season (offline)
+python -m src.cli trade-dashboard --slot 4
+start outputs\trade_evaluator.html
 ```
 
 ---
@@ -563,6 +654,7 @@ Everything below is background rather than instructions.
 |---|---|
 | [`docs/running.md`](docs/running.md) | Per-OS setup, Docker vs Python |
 | [`docs/lockin_strategy.md`](docs/lockin_strategy.md) | How to play Lock-In, measured |
+| [`docs/trade_evaluation.md`](docs/trade_evaluation.md) | Why trades are graded on lineup fit, not totals |
 | [`docs/lock_in_mechanics.md`](docs/lock_in_mechanics.md) | What was verified vs assumed, with sources |
 | [`docs/assumptions.md`](docs/assumptions.md) | Every assumption, rated by impact |
 | [`docs/data_sources.md`](docs/data_sources.md) | Where data comes from |
@@ -702,19 +794,21 @@ src/
   schedule/          fantasy weeks, games-per-week
   adp/               multi-source ADP, name matching, value gaps
   draft/             board, tiers, VOR, Monte Carlo simulator, live assistant
-  reporting/         interactive HTML board
+  reporting/         interactive HTML board and trade evaluator
   valuation.py       combines everything into a player valuation
+  trade.py           lineup assignment, depth cost, trade and pick valuation
   backtest.py        projection + Lock-In backtests, weight tuning
   pipeline.py        the one reproducible path from raw data to board
-tests/               260 tests
+tests/               341 tests
 docs/
   lock_in_mechanics.md   what was verified vs assumed, with sources
   lockin_strategy.md     how to play Lock-In, measured (incl. the 37% rule)
+  trade_evaluation.md    why trades are graded on lineup fit, not on totals
   running.md             per-OS setup: PowerShell vs Terminal, Docker vs Python
   data_sources.md        how to get real data in
   assumptions.md         full assumption register + known gaps
   schemas.md             data contracts
-outputs/               draft_board.csv / .html, player_values.csv
+outputs/               draft_board.csv / .html, player_values.csv, trade_evaluator.html
 ```
 
 ---

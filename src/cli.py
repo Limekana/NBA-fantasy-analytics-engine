@@ -893,6 +893,210 @@ def cmd_adp_template(args) -> int:
     return 0
 
 
+def _load_board_or_fail(cfg, board_arg):
+    board_path = Path(board_arg) if board_arg else _find_board(cfg)
+    if board_path is None or not board_path.exists():
+        print("No draft board found. Run `python -m src.cli build-board` first "
+              "(or `demo` to try it on synthetic data).")
+        return None, None
+    board = pd.read_csv(board_path)
+    if "is_synthetic" in board.columns and board["is_synthetic"].any():
+        print("\n*** WARNING: this board is built on SYNTHETIC data. "
+              "Every number below is a demonstration, not advice. ***\n")
+    return board, board_path
+
+
+def _resolve_or_report(names, index, label) -> list | None:
+    """Resolve typed names, printing suggestions for anything that misses."""
+    from src.trade import resolve_names
+
+    players, unmatched = resolve_names(names, index)
+    if unmatched:
+        print(f"\n!!!! {label}: {len(unmatched)} name(s) did not match the board")
+        for name, suggestions in unmatched:
+            hint = f"  did you mean: {', '.join(suggestions)}" if suggestions else "  no close match"
+            print(f"  {name}{hint}")
+        print("\nFix the spelling and re-run - a dropped player silently changes every number.")
+        return None
+    return players
+
+
+def _picks_as_players(cfg, board, pick_numbers, simulations, drafted):
+    from src.trade import pick_value_curve
+
+    if not pick_numbers:
+        return [], {}
+    curve = pick_value_curve(
+        board, cfg.league, cfg.model, pick_numbers,
+        n_simulations=simulations, already_drafted=drafted,
+    )
+    return [value.as_player(cfg.league) for value in curve.values()], curve
+
+
+def cmd_trade(args) -> int:
+    """Grade a proposed trade against your own roster."""
+    from src.trade import board_to_roster_players, evaluate_trade
+
+    cfg = load_config()
+    board, _ = _load_board_or_fail(cfg, args.board)
+    if board is None:
+        return 1
+
+    index = board_to_roster_players(board)
+    roster_names = _read_names(args.roster)
+    if not roster_names:
+        print(
+            "I need to know your roster before I can tell you whether a trade helps it.\n"
+            "Only nine players score each week, so the same player is worth very different\n"
+            "amounts depending on who you already have.\n\n"
+            "Make a text file with one player per line and pass it:\n"
+            "    python -m src.cli trade --roster my_roster.txt --give \"Player A\" --get \"Player B\"\n"
+        )
+        return 1
+
+    roster = _resolve_or_report(roster_names, index, "MY ROSTER")
+    if roster is None:
+        return 1
+
+    give = _resolve_or_report(_read_names(args.give), index, "GIVING AWAY")
+    if give is None:
+        return 1
+    get = _resolve_or_report(_read_names(args.get), index, "GETTING BACK")
+    if get is None:
+        return 1
+
+    drafted = [p.name for p in roster]
+    give_picks, _ = _picks_as_players(cfg, board, args.give_pick, args.simulations, drafted)
+    get_picks, get_curve = _picks_as_players(cfg, board, args.get_pick, args.simulations, drafted)
+    roster = list(roster) + list(give_picks)
+    give = list(give) + list(give_picks)
+    get = list(get) + list(get_picks)
+
+    if not give and not get:
+        print("Nothing to evaluate. Pass --give and/or --get.")
+        return 1
+
+    weeks = args.weeks_left or int(cfg.league.calendar.get("regular_season_weeks", 22))
+    evaluation = evaluate_trade(
+        roster, [p.player_id for p in give], get, cfg.league,
+        weeks_remaining=weeks, stress_fraction=args.stress / 100.0,
+    )
+
+    _print_header("TRADE EVALUATION")
+    print(f"\n  You give : {', '.join(evaluation.give.names) or '(nothing)'}")
+    print(f"  You get  : {', '.join(evaluation.get.names) or '(nothing)'}")
+    print(f"\n  VERDICT  : {evaluation.verdict}")
+    print(f"\n  Change per week ............ {evaluation.delta_weekly:+.2f} FP")
+    print(f"  Over {weeks} weeks remaining ..... {evaluation.delta_season:+.0f} FP")
+    print(f"  Share of your lineup ....... {evaluation.relative * 100:+.1f}%")
+    print(f"\n  Starting lineup ............ {evaluation.delta_starters:+.2f} FP/wk")
+    print(f"  Depth / injury cover ....... {evaluation.delta_depth:+.2f} FP/wk")
+    print(
+        f"  Raw totals would say ....... "
+        f"{evaluation.get.raw_weekly - evaluation.give.raw_weekly:+.2f} FP/wk"
+    )
+    print(f"\n  If the incoming players are {args.stress:.0f}% worse than projected: "
+          f"{evaluation.pessimistic_weekly:+.2f} FP/wk")
+    print(f"  If they are {args.stress:.0f}% better ..................... "
+          f"{evaluation.optimistic_weekly:+.2f} FP/wk")
+    print(f"  Verdict survives that test . {'yes' if evaluation.robust else 'NO'}")
+
+    if get_curve:
+        print("\n  PICKS PRICED AS")
+        for pick, value in sorted(get_curve.items()):
+            typical = ", ".join(value.typical[:2])
+            print(f"    #{pick:<4} {value.weekly_value:6.1f} FP/wk   usually someone like {typical}")
+
+    if evaluation.flags:
+        print("\n  WORTH KNOWING")
+        for flag in evaluation.flags:
+            print(f"    - {flag}")
+
+    print("\n  LINEUP, BEFORE -> AFTER")
+    before_by_slot = list(evaluation.before.lineup.assignments)
+    after_by_slot = list(evaluation.after.lineup.assignments)
+    lookup = {p.player_id: p for p in roster + list(get)}
+    for index_position in range(max(len(before_by_slot), len(after_by_slot))):
+        slot_b, id_b = before_by_slot[index_position] if index_position < len(before_by_slot) else ("", "")
+        slot_a, id_a = after_by_slot[index_position] if index_position < len(after_by_slot) else ("", "")
+        name_b = lookup[id_b].name if id_b in lookup else "-"
+        name_a = lookup[id_a].name if id_a in lookup else "-"
+        mark = "  " if name_a == name_b else "->"
+        print(f"    {slot_b or slot_a:<5} {name_b:<24} {mark} {name_a}")
+
+    print("\n  MARGINAL VALUE AFTER THE TRADE (what a week without them costs you)")
+    ranked = sorted(evaluation.after.marginal_value.items(), key=lambda kv: kv[1])
+    for player_id, value in ranked:
+        player = lookup.get(player_id)
+        if player is not None:
+            print(f"    {player.name:<24} {value:6.2f} FP/wk")
+    print(
+        "\n  The players at the top of that list are the ones you are already covering.\n"
+        "  They are what you put in a trade; the ones at the bottom are what you keep.\n"
+    )
+    return 0
+
+
+def cmd_trade_dashboard(args) -> int:
+    """Build the offline interactive trade evaluator."""
+    from datetime import datetime, timezone
+
+    from src.reporting.trade_dashboard import render_trade_dashboard
+    from src.trade import pick_value_curve
+
+    cfg = load_config()
+    board, board_path = _load_board_or_fail(cfg, args.board)
+    if board is None:
+        return 1
+
+    _print_header("BUILD TRADE DASHBOARD")
+
+    picks = list(args.picks or [])
+    if not picks:
+        slot = args.slot or cfg.league.draft.get("my_draft_slot")
+        if slot:
+            from src.draft import picks_for_slot
+
+            rounds = int(cfg.league.draft.get("rounds", cfg.league.roster_size))
+            picks = picks_for_slot(int(slot), cfg.league.teams, rounds)
+
+    curve = {}
+    if picks:
+        print(f"\nPricing picks {', '.join(str(p) for p in picks)} "
+              f"({args.simulations or cfg.model.get('draft_simulation', {}).get('n_simulations', 2000):,} "
+              "simulated drafts)...")
+        curve = pick_value_curve(
+            board, cfg.league, cfg.model, picks, n_simulations=args.simulations
+        )
+
+    roster_names = _read_names(args.roster)
+    is_synthetic = bool(board["is_synthetic"].any()) if "is_synthetic" in board.columns else False
+    prefix = "SYNTHETIC_" if is_synthetic else ""
+    output = cfg.paths["outputs"] / f"{prefix}trade_evaluator.html"
+
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    subtitle = (
+        f"Generated {generated} | {len(board)} players | "
+        f"{cfg.league.roster_size}-man rosters, {len(cfg.league.starting_slots)} starting slot types"
+    )
+    path = render_trade_dashboard(
+        board, output, cfg.league, curve, subtitle=subtitle, my_roster=roster_names
+    )
+
+    print(f"\nWrote {path}")
+    if curve:
+        print("\nPICK VALUES")
+        for pick, value in sorted(curve.items()):
+            print(f"  #{pick:<4} {value.weekly_value:6.1f} FP/wk   "
+                  f"usually someone like {', '.join(value.typical[:2])}")
+    print(
+        "\nOpen it by double-clicking the file, or from PowerShell:\n"
+        f"    start {path}\n"
+        "\nIt works offline and remembers your roster, so you can leave it open all season."
+    )
+    return 0
+
+
 def cmd_data_help(args) -> int:
     """Print exactly where to get data and what format it needs."""
     _print_header("HOW TO GET DATA INTO THIS PIPELINE")
@@ -1101,6 +1305,42 @@ def build_parser() -> argparse.ArgumentParser:
     adp.add_argument("--league-format", default="10-team")
     adp.add_argument("--scoring-format", default="unknown - NOT sleeper_lockin")
     adp.set_defaults(func=cmd_add_adp)
+
+    trade = sub.add_parser(
+        "trade",
+        help="grade a proposed trade against your own roster",
+        description=(
+            "Only nine players score each week, so a trade is graded by how much it "
+            "changes your best legal lineup - not by adding up the players on each side."
+        ),
+    )
+    trade.add_argument("--roster", required=True,
+                       help="file with your players (one per line), or a comma-separated list")
+    trade.add_argument("--give", default="", help="players you send away")
+    trade.add_argument("--get", default="", help="players you receive")
+    trade.add_argument("--give-pick", type=int, nargs="*", default=[],
+                       help="overall pick numbers you send away, e.g. --give-pick 15 35")
+    trade.add_argument("--get-pick", type=int, nargs="*", default=[],
+                       help="overall pick numbers you receive")
+    trade.add_argument("--weeks-left", type=int,
+                       help="weeks remaining this season (default: the full regular season)")
+    trade.add_argument("--stress", type=float, default=10.0,
+                       help="percent the projections might be wrong by (default 10)")
+    trade.add_argument("--simulations", type=int, help="drafts to simulate when pricing picks")
+    trade.add_argument("--board", help="path to a draft board CSV")
+    trade.set_defaults(func=cmd_trade)
+
+    dashboard = sub.add_parser(
+        "trade-dashboard",
+        help="build the offline interactive trade evaluator (HTML)",
+    )
+    dashboard.add_argument("--roster", help="pre-fill your roster from a file or comma-separated list")
+    dashboard.add_argument("--picks", type=int, nargs="*",
+                           help="overall pick numbers to price (default: your picks from --slot)")
+    dashboard.add_argument("--slot", type=int, help="your draft slot, for pricing your own picks")
+    dashboard.add_argument("--simulations", type=int, help="drafts to simulate when pricing picks")
+    dashboard.add_argument("--board", help="path to a draft board CSV")
+    dashboard.set_defaults(func=cmd_trade_dashboard)
 
     sub.add_parser("data-help", help="where to get data and what format it needs").set_defaults(func=cmd_data_help)
 
