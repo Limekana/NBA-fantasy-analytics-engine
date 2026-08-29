@@ -684,3 +684,45 @@ def test_demo_writes_outside_the_real_raw_directory():
 
     assert DEMO_DIR != RAW_DIR
     assert RAW_DIR not in DEMO_DIR.parents
+
+
+# =========================================================================
+# ADP template - names seeded from the board so matching cannot fail
+# =========================================================================
+
+def test_adp_template_names_match_the_board_exactly(tmp_path):
+    """The whole point of the template: no hand-typed names, so no typos and
+    therefore no silently-unmatched players."""
+    from src.adp import consensus_adp, join_adp, load_adp_file, normalise_name
+
+    board = pd.DataFrame([
+        {"player_name": "Nikola Jokić", "model_rank": 1},
+        {"player_name": "Shai Gilgeous-Alexander", "model_rank": 2},
+        {"player_name": "P.J. Washington", "model_rank": 3},
+    ])
+
+    # A template is the board's own names plus an empty adp column.
+    template = board[["player_name"]].copy()
+    template["adp"] = ""
+    template.loc[0, "adp"] = 1.2
+    template.loc[1, "adp"] = 2.4          # row 2 deliberately left blank
+    path = tmp_path / "adp_template.csv"
+    template.to_csv(path, index=False)
+
+    loaded = load_adp_file(path, source="t", retrieved_at="")
+    assert len(loaded) == 2               # the blank row is dropped, not zeroed
+
+    joined = join_adp(board, consensus_adp(loaded))
+    assert joined.loc[joined["player_name"] == "Nikola Jokić", "adp"].iloc[0] == 1.2
+    assert pd.isna(joined.loc[joined["player_name"] == "P.J. Washington", "adp"].iloc[0])
+
+
+def test_blank_adp_cells_are_dropped_not_treated_as_zero(tmp_path):
+    """A blank cell read as 0 would make that player the number-one pick."""
+    from src.adp import load_adp_file
+
+    path = tmp_path / "adp.csv"
+    path.write_text("player_name,adp\nA Player,1.5\nB Player,\nC Player,3.0\n", encoding="utf-8")
+    loaded = load_adp_file(path, source="t", retrieved_at="")
+    assert set(loaded["player_name"]) == {"A Player", "C Player"}
+    assert loaded["adp"].min() == 1.5

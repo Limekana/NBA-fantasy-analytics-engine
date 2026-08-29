@@ -772,7 +772,27 @@ def cmd_add_adp(args) -> int:
 
     source_path = Path(args.file)
     if not source_path.exists():
-        print(f"\nFile not found: {source_path}")
+        print(f"\nFile not found: {source_path.resolve()}")
+        print("\nYou need to CREATE this file first - it holds the ADP numbers, and")
+        print("nothing can invent them for you. Two ways:\n")
+        print("  EASIEST - generate a template pre-filled with your board's players,")
+        print("  then just type the ADP numbers next to the names:")
+        print("      python -m src.cli adp-template")
+        print("      notepad data\\external\\adp_template.csv")
+        print("      python -m src.cli add-adp data\\external\\adp_template.csv --name mysource\n")
+        print("  OR write your own CSV with any two columns like this:")
+        print("      Player,ADP")
+        print("      Nikola Jokic,1.2")
+        print("      Luka Doncic,2.4\n")
+        print("Where to get the numbers - best first:")
+        print("  1. Run a MOCK DRAFT in the Sleeper app for your own league format.")
+        print("     Record the pick order. This is the best source you have: it")
+        print("     matches your scoring and your 10-team size, which no published")
+        print("     ADP does.")
+        print("  2. Sleeper shows ADP on the draft board during a real draft.")
+        print("  3. Any public top-150 ranking. Note it will be 9-cat or standard")
+        print("     points, NOT Lock-In - that mismatch is your edge, but record it")
+        print("     honestly with --scoring-format.")
         return 1
 
     # Validate before touching anything.
@@ -828,6 +848,48 @@ def cmd_add_adp(args) -> int:
     print("\nNow rebuild:  python -m src.cli build-board")
     print("Add a SECOND source when you can - the board reports where sources")
     print("disagree, and one source alone can be systematically off.")
+    return 0
+
+
+def cmd_adp_template(args) -> int:
+    """Write a CSV pre-filled with your board's players, ready for ADP numbers.
+
+    Typing 150 player names by hand invites typos, and a typo means the player
+    silently fails to match and gets no market value. Seeding the file from the
+    board's own names makes matching exact by construction - you only fill in
+    numbers.
+    """
+    from src.config import EXTERNAL_DIR
+
+    cfg = load_config()
+    _print_header("CREATE AN ADP TEMPLATE")
+
+    board_path = _find_board(cfg)
+    if board_path is None or not board_path.exists():
+        print("\nNo draft board found. Run `python -m src.cli build-board` first -")
+        print("the template is seeded from your board so the names match exactly.")
+        return 1
+
+    board = pd.read_csv(board_path)
+    top = board.head(args.top)[["player_name", "team", "position"]].copy()
+    top["adp"] = ""
+
+    EXTERNAL_DIR.mkdir(parents=True, exist_ok=True)
+    destination = EXTERNAL_DIR / "adp_template.csv"
+    top.to_csv(destination, index=False)
+
+    print(f"\nWrote {len(top)} players -> {destination}")
+    print("\nNEXT STEPS")
+    print(f"  1. Open it:      notepad {destination}")
+    print("     (or double-click it to open in Excel, which is easier)")
+    print("  2. Fill in the `adp` column. You do NOT need all of them - the top")
+    print("     60-80 is plenty, since that is where waiting-vs-reaching decisions")
+    print("     actually matter. Leave the rest blank; blanks are ignored.")
+    print("  3. Save it, then register it:")
+    print(f"        python -m src.cli add-adp {destination} --name mysource")
+    print("  4. Rebuild:  python -m src.cli build-board")
+    print("\nThe names are already exactly as your board spells them, so every")
+    print("row you fill in will match.")
     return 0
 
 
@@ -1026,6 +1088,12 @@ def build_parser() -> argparse.ArgumentParser:
                            "to include small-sample players, which is the only way "
                            "to see what shrinkage is actually buying you.")
     back.set_defaults(func=cmd_backtest)
+
+    template = sub.add_parser(
+        "adp-template", help="write a CSV of your board's players, ready for ADP numbers"
+    )
+    template.add_argument("--top", type=int, default=200, help="how many players to include")
+    template.set_defaults(func=cmd_adp_template)
 
     adp = sub.add_parser("add-adp", help="register an ADP CSV and record its provenance")
     adp.add_argument("file", help="path to a CSV with player names and ADP")
