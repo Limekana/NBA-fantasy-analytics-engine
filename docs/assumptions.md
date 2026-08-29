@@ -76,6 +76,25 @@ It answers two questions in order:
    shrinkage, multi-season blend, bonus projection — and reports which one the
    model scores *better* without. That is the thing to change.
 
+### Why the age curve often goes neutral after switching to `last_season`/`blend`
+
+A result worth understanding rather than just accepting: once the multi-season
+blend is switched off, the age curve frequently stops mattering — the ablation
+reports it as reshuffling players while changing accuracy by nothing.
+
+That is not a bug, and the two findings are linked. **Last season's statistics
+already reflect the player's current age.** An age curve applied on top of them
+double-counts the effect. The curve earns its place when you are averaging
+several seasons, because the older ones were recorded when the player was
+younger and need correcting forward. Remove the blend and you remove the thing
+the curve was correcting for.
+
+**Caveat before flattening it entirely:** the backtest scores only players with
+≥20 games in both the prior and target seasons. That excludes rookies (no prior
+season) and players whose age ended their season — precisely the cases where an
+age adjustment matters most. "Neutral on the measured population" is not the same
+as "neutral on the board". Softening the curve is safer than deleting it.
+
 **The important structural point:** the projection layer and the Lock-In layer
 are independent. If the simple projection ranks better, use it —
 

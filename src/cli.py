@@ -672,8 +672,16 @@ def cmd_backtest(args) -> int:
             )
             print(ablation.to_string(index=False))
 
+            neutral = ablation[
+                (ablation["removing_helps_by"].abs() < 0.0005)
+                & (ablation["variant"] != "FULL MODEL")
+            ]
             hurting = ablation[ablation["removing_helps_by"] > 0.002]
             print("\nREAD THIS AS:")
+            for row in neutral.itertuples():
+                print(f"  - '{row.variant}' is NEUTRAL: it reshuffles the board but")
+                print("    changes accuracy by nothing. Not broken, just not earning")
+                print("    its place on the players this backtest can see.")
             if hurting.empty:
                 print("  No single component is clearly hurting. The gap is spread thin,")
                 print("  which usually means the projection is fine and the baseline is")
@@ -793,7 +801,13 @@ def _suggest_fix(variant: str) -> None:
         "no_age_curve": (
             "    The age curve is hurting. It is an assumed shape, not a fitted\n"
             "    one. Flatten it in config/model.yaml (set every age to 1.0) or\n"
-            "    soften the decline at the older ages."
+            "    soften the decline at the older ages.\n"
+            "\n"
+            "    NOTE: if you are on projection.method last_season or blend, an age\n"
+            "    adjustment is largely redundant - last season's stats ALREADY\n"
+            "    reflect the player's current age, so applying a curve on top\n"
+            "    double-counts it. The curve earns its place when averaging several\n"
+            "    seasons, because the older ones were recorded at a younger age."
         ),
         "no_shrinkage": (
             "    Shrinkage toward the positional mean is costing you on the players\n"
