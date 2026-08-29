@@ -323,7 +323,7 @@ def test_every_projection_method_produces_a_board(cfg, tmp_path, multi_season, m
         group.to_csv(directory / "logs.csv", index=False)
 
     variant = config_with_overrides({"model": {"projection": {"method": method}}}, base=cfg)
-    result = run_pipeline(variant, sorted(logs["season"].unique()), raw_root=tmp_path, players=players)
+    result = run_pipeline(variant, sorted(logs["season"].unique()), raw_root=tmp_path, players=players, allow_synthetic=True)
     assert not result.board.empty
     assert result.board["projected_fp_game"].notna().any()
 

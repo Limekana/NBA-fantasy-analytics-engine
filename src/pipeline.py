@@ -36,9 +36,21 @@ class PipelineResult:
     is_synthetic: bool
 
 
-def load_seasons(cfg: AppConfig, seasons: Sequence[str], root: Path | None = None) -> pd.DataFrame:
-    """Load and concatenate raw game logs for the requested seasons."""
-    source = CSVSource(root or cfg.paths["raw"])
+def load_seasons(
+    cfg: AppConfig,
+    seasons: Sequence[str],
+    root: Path | None = None,
+    allow_synthetic: bool = False,
+) -> pd.DataFrame:
+    """Load and concatenate raw game logs for the requested seasons.
+
+    ``allow_synthetic`` defaults to False so a stray generated file in data/raw/
+    can never reach a real board. Only the demo path opts in - an explicit flag
+    rather than a directory comparison, which would silently stop protecting
+    anything the moment someone passed a different path.
+    """
+    root_path = Path(root) if root else cfg.paths["raw"]
+    source = CSVSource(root_path, allow_synthetic=allow_synthetic)
     frames, warnings = [], []
     for season in seasons:
         try:
@@ -173,12 +185,13 @@ def run_pipeline(
     raw_root: Path | None = None,
     players: pd.DataFrame | None = None,
     schedule: pd.DataFrame | None = None,
+    allow_synthetic: bool = False,
 ) -> PipelineResult:
     """Raw game logs -> draft board. The single reproducible path."""
     warnings: list[str] = []
     engine = ScoringEngine(cfg.scoring)
 
-    logs = load_seasons(cfg, seasons, raw_root)
+    logs = load_seasons(cfg, seasons, raw_root, allow_synthetic=allow_synthetic)
     player_table = derive_players(logs, players)
 
     health = data_health(logs, player_table)

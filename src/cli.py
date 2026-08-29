@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.config import RAW_DIR, load_config, validate
+from src.config import DEMO_DIR, RAW_DIR, load_config, validate
 from src.scoring import ScoringEngine
 
 
@@ -365,14 +365,19 @@ def cmd_demo(args) -> int:
     print("\n*** SYNTHETIC DATA - NOT REAL PLAYERS, NOT A REAL PROJECTION ***\n")
 
     seasons = args.seasons or ["2023-24", "2024-25", "2025-26"]
+    # DEMO_DIR, never RAW_DIR: synthetic seasons written next to real game logs
+    # are loaded together, putting invented players on a real draft board.
     _path, players, logs = write_synthetic_season(
-        RAW_DIR, n_players=args.players, seasons=seasons
+        DEMO_DIR, n_players=args.players, seasons=seasons
     )
     print(f"Generated {len(players)} players / {len(logs):,} game rows "
           f"across {len(seasons)} seasons")
     print("Run `python -m src.cli backtest` to exercise the backtest machinery.\n")
 
-    return _run_and_report(cfg, seasons, players=players, verbose=args.verbose)
+    return _run_and_report(
+        cfg, seasons, players=players, verbose=args.verbose,
+        raw_root=DEMO_DIR, allow_synthetic=True,
+    )
 
 
 def cmd_build_board(args) -> int:
@@ -384,11 +389,15 @@ def cmd_build_board(args) -> int:
     return _run_and_report(cfg, seasons, players=players, schedule=schedule, verbose=args.verbose)
 
 
-def _run_and_report(cfg, seasons, players=None, schedule=None, verbose=False) -> int:
+def _run_and_report(cfg, seasons, players=None, schedule=None, verbose=False,
+                    raw_root=None, allow_synthetic=False) -> int:
     from src.pipeline import run_pipeline, write_outputs
 
     try:
-        result = run_pipeline(cfg, seasons, players=players, schedule=schedule)
+        result = run_pipeline(
+            cfg, seasons, players=players, schedule=schedule, raw_root=raw_root,
+            allow_synthetic=allow_synthetic,
+        )
     except FileNotFoundError as exc:
         print(f"\n{exc}")
         return 1
@@ -743,6 +752,85 @@ def cmd_backtest(args) -> int:
     return 0
 
 
+def cmd_add_adp(args) -> int:
+    """Register an ADP file and record its provenance in config/sources.yaml.
+
+    ADP is the market price - what the rest of your league will actually do.
+    Without it the board can rank players but cannot tell you who will still be
+    there in two rounds, which is the question that decides most picks.
+    """
+    import shutil
+    from datetime import datetime, timezone
+
+    import yaml
+
+    from src.adp import load_adp_file
+    from src.config import CONFIG_DIR, EXTERNAL_DIR
+
+    cfg = load_config()
+    _print_header("ADD AN ADP SOURCE")
+
+    source_path = Path(args.file)
+    if not source_path.exists():
+        print(f"\nFile not found: {source_path}")
+        return 1
+
+    # Validate before touching anything.
+    try:
+        frame = load_adp_file(
+            source_path, source=args.name, retrieved_at="",
+            league_format=args.league_format, scoring_format=args.scoring_format,
+        )
+    except (ValueError, KeyError) as exc:
+        print(f"\nCould not read it: {exc}")
+        print("\nAn ADP file needs a player-name column and an ADP column. Any of")
+        print("these headings work: player/name/player_name, and adp/rank/avg_pick/overall.")
+        return 1
+
+    destination_dir = EXTERNAL_DIR / "adp"
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    destination = destination_dir / f"{args.name}_{stamp}.csv"
+    shutil.copy(source_path, destination)
+
+    sources_path = CONFIG_DIR / "sources.yaml"
+    raw = yaml.safe_load(sources_path.read_text(encoding="utf-8")) or {}
+    raw.setdefault("adp", {}).setdefault("sources", [])
+    entries = [e for e in raw["adp"]["sources"] if e.get("name") != args.name]
+    entries.append({
+        "name": args.name,
+        "file": str(destination.relative_to(cfg.paths["repo"])).replace("\\", "/"),
+        "retrieved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "league_format": args.league_format,
+        "scoring_format": args.scoring_format,
+    })
+    raw["adp"]["sources"] = entries
+    sources_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    print(f"\nRead {len(frame):,} players from {source_path.name}")
+    print(f"  copied to    {destination}")
+    print(f"  registered   config/sources.yaml -> adp.sources[{args.name}]")
+    print(f"  ADP range    {frame['adp'].min():.1f} to {frame['adp'].max():.1f}")
+
+    # How many will actually join the board?
+    board_path = _find_board(cfg)
+    if board_path and board_path.exists():
+        from src.adp import consensus_adp, normalise_name
+
+        board = pd.read_csv(board_path)
+        board_keys = {normalise_name(n) for n in board["player_name"]}
+        matched = sum(1 for k in frame["name_key"] if k in board_keys)
+        print(f"  matches board {matched}/{len(frame)} players")
+        if matched < len(frame) * 0.5:
+            print("\n  !! Under half matched. Check the name column is really names,")
+            print("     and that this ADP covers the same season.")
+
+    print("\nNow rebuild:  python -m src.cli build-board")
+    print("Add a SECOND source when you can - the board reports where sources")
+    print("disagree, and one source alone can be systematically off.")
+    return 0
+
+
 def cmd_data_help(args) -> int:
     """Print exactly where to get data and what format it needs."""
     _print_header("HOW TO GET DATA INTO THIS PIPELINE")
@@ -938,6 +1026,13 @@ def build_parser() -> argparse.ArgumentParser:
                            "to include small-sample players, which is the only way "
                            "to see what shrinkage is actually buying you.")
     back.set_defaults(func=cmd_backtest)
+
+    adp = sub.add_parser("add-adp", help="register an ADP CSV and record its provenance")
+    adp.add_argument("file", help="path to a CSV with player names and ADP")
+    adp.add_argument("--name", required=True, help="source name, e.g. fantasypros")
+    adp.add_argument("--league-format", default="10-team")
+    adp.add_argument("--scoring-format", default="unknown - NOT sleeper_lockin")
+    adp.set_defaults(func=cmd_add_adp)
 
     sub.add_parser("data-help", help="where to get data and what format it needs").set_defaults(func=cmd_data_help)
 

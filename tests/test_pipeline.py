@@ -94,7 +94,7 @@ def test_csv_source_round_trip(tmp_path, synthetic):
     directory = tmp_path / "2025-26"
     directory.mkdir(parents=True)
     logs.to_csv(directory / "logs.csv", index=False)
-    loaded = CSVSource(tmp_path).fetch_game_logs("2025-26")
+    loaded = CSVSource(tmp_path, allow_synthetic=True).fetch_game_logs("2025-26")
     assert len(loaded) == len(logs)
 
 
@@ -357,7 +357,7 @@ def test_pipeline_runs_end_to_end(cfg, tmp_path, synthetic):
     directory.mkdir(parents=True)
     logs.to_csv(directory / "logs.csv", index=False)
 
-    result = run_pipeline(cfg, ["2025-26"], raw_root=tmp_path, players=players)
+    result = run_pipeline(cfg, ["2025-26"], raw_root=tmp_path, players=players, allow_synthetic=True)
 
     assert not result.board.empty
     assert result.is_synthetic is True
@@ -370,7 +370,7 @@ def test_pipeline_board_is_sorted_by_value(cfg, tmp_path, synthetic):
     directory = tmp_path / "2025-26"
     directory.mkdir(parents=True)
     logs.to_csv(directory / "logs.csv", index=False)
-    result = run_pipeline(cfg, ["2025-26"], raw_root=tmp_path, players=players)
+    result = run_pipeline(cfg, ["2025-26"], raw_root=tmp_path, players=players, allow_synthetic=True)
     values = result.board["projected_season_value"].to_numpy()
     assert np.all(np.diff(values) <= 1e-6)
 
@@ -380,7 +380,7 @@ def test_pipeline_warns_when_no_adp_is_loaded(cfg, tmp_path, synthetic):
     directory = tmp_path / "2025-26"
     directory.mkdir(parents=True)
     logs.to_csv(directory / "logs.csv", index=False)
-    result = run_pipeline(cfg, ["2025-26"], raw_root=tmp_path, players=players)
+    result = run_pipeline(cfg, ["2025-26"], raw_root=tmp_path, players=players, allow_synthetic=True)
     assert any("ADP" in w for w in result.warnings)
 
 
@@ -400,7 +400,7 @@ def test_non_game_log_csv_in_the_season_directory_is_ignored(tmp_path, synthetic
         directory / "players.csv", index=False
     )
 
-    loaded = CSVSource(tmp_path).fetch_game_logs("2025-26")
+    loaded = CSVSource(tmp_path, allow_synthetic=True).fetch_game_logs("2025-26")
     assert len(loaded) == len(logs)
     assert loaded["points"].notna().all()
 
@@ -517,7 +517,7 @@ def test_low_match_rate_is_reported_as_a_warning(cfg, tmp_path, synthetic):
     logs.to_csv(directory / "logs.csv", index=False)
 
     external = sleeper_style_players(["Nobody Matches This", "Nor This One"])
-    result = run_pipeline(cfg, ["2025-26"], raw_root=tmp_path, players=external)
+    result = run_pipeline(cfg, ["2025-26"], raw_root=tmp_path, players=external, allow_synthetic=True)
     assert any("matched the supplied metadata" in w for w in result.warnings)
 
 
@@ -548,7 +548,7 @@ def test_pipeline_runs_with_sleeper_metadata_end_to_end(cfg, tmp_path, synthetic
     logs.to_csv(directory / "logs.csv", index=False)
 
     external = sleeper_style_players(sorted(logs["player_name"].unique()))
-    result = run_pipeline(cfg, ["2025-26"], raw_root=tmp_path, players=external)
+    result = run_pipeline(cfg, ["2025-26"], raw_root=tmp_path, players=external, allow_synthetic=True)
     assert not result.board.empty
     assert result.board["position"].notna().any()
 
@@ -611,3 +611,76 @@ def test_drafted_names_also_accepted_inline(tmp_path):
     from src.cli import _read_names
 
     assert _read_names("Nikola Jokic, Luka Doncic") == ["Nikola Jokic", "Luka Doncic"]
+
+
+# =========================================================================
+# Synthetic demo data must never reach a real draft board
+# =========================================================================
+# `demo` used to write generated seasons into data/raw/, and because every CSV
+# in a season directory is loaded, invented players ended up ranked against real
+# ones on a real board. Two independent guards now prevent it.
+
+def test_synthetic_file_is_skipped_when_loading_real_data(tmp_path, synthetic):
+    players, logs = synthetic
+    directory = tmp_path / "2025-26"
+    directory.mkdir(parents=True)
+    logs.to_csv(directory / "SYNTHETIC_game_logs_2025-26.csv", index=False)
+
+    real = pd.DataFrame([
+        {"player_name": "Nikola Jokic", "game_date": "2025-10-21", "team": "DEN",
+         "minutes": 34.0, "points": 28, "rebounds": 12, "assists": 11, "steals": 1,
+         "blocks": 1, "turnovers": 3, "personal_fouls": 2, "free_throws_made": 5,
+         "three_pointers_made": 2}
+    ])
+    real.to_csv(directory / "game_logs_2025-26.csv", index=False)
+
+    loaded = CSVSource(tmp_path).fetch_game_logs("2025-26")
+    assert list(loaded["player_name"].unique()) == ["Nikola Jokic"]
+
+
+def test_synthetic_detected_by_column_even_if_renamed(tmp_path, synthetic):
+    """The filename guard alone is defeated by a rename; the column catches it."""
+    players, logs = synthetic
+    directory = tmp_path / "2025-26"
+    directory.mkdir(parents=True)
+    logs.to_csv(directory / "totally_legitimate_data.csv", index=False)
+
+    real = pd.DataFrame([
+        {"player_name": "Luka Doncic", "game_date": "2025-10-21", "team": "LAL",
+         "minutes": 36.0, "points": 30, "rebounds": 8, "assists": 9, "steals": 1,
+         "blocks": 0, "turnovers": 4, "personal_fouls": 2, "free_throws_made": 6,
+         "three_pointers_made": 4}
+    ])
+    real.to_csv(directory / "game_logs.csv", index=False)
+
+    loaded = CSVSource(tmp_path).fetch_game_logs("2025-26")
+    assert list(loaded["player_name"].unique()) == ["Luka Doncic"]
+
+
+def test_demo_directory_may_load_synthetic_data(tmp_path, synthetic):
+    """The demo has to be able to read its own data - the guard is opt-out."""
+    players, logs = synthetic
+    directory = tmp_path / "2025-26"
+    directory.mkdir(parents=True)
+    logs.to_csv(directory / "SYNTHETIC_game_logs_2025-26.csv", index=False)
+
+    loaded = CSVSource(tmp_path, allow_synthetic=True).fetch_game_logs("2025-26")
+    assert len(loaded) == len(logs)
+
+
+def test_a_folder_of_only_synthetic_files_raises_rather_than_silently_emptying(tmp_path, synthetic):
+    players, logs = synthetic
+    directory = tmp_path / "2025-26"
+    directory.mkdir(parents=True)
+    logs.to_csv(directory / "SYNTHETIC_game_logs_2025-26.csv", index=False)
+
+    with pytest.raises(FileNotFoundError):
+        CSVSource(tmp_path).fetch_game_logs("2025-26")
+
+
+def test_demo_writes_outside_the_real_raw_directory():
+    """The structural fix: DEMO_DIR and RAW_DIR must be different places."""
+    from src.config import DEMO_DIR, RAW_DIR
+
+    assert DEMO_DIR != RAW_DIR
+    assert RAW_DIR not in DEMO_DIR.parents

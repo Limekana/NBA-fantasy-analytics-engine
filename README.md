@@ -222,6 +222,11 @@ scoring view. If it only pays 4, open `config\league.yaml` and change:
 
 ## Step 6 — Try it on fake data first
 
+> Demo data is written to `data\demo\`, kept separate from `data\raw\` so it can
+> never mix into a real board. If you followed an older version of this guide and
+> see `SYNTHETIC_draft_board.csv` after Step 9, delete the leftovers:
+> `Remove-Item data\raw\*\SYNTHETIC_* -Recurse`
+
 Before dealing with real data, prove the tool runs:
 
 ```powershell

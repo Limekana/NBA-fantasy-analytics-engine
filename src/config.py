@@ -18,6 +18,10 @@ CONFIG_DIR = REPO_ROOT / "config"
 
 DATA_DIR = REPO_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
+# Synthetic demo data lives here, NEVER in data/raw/. Writing it alongside real
+# game logs let a `demo` run contaminate a real draft board, because the loader
+# reads every CSV in a season directory.
+DEMO_DIR = DATA_DIR / "demo"
 PROCESSED_DIR = DATA_DIR / "processed"
 EXTERNAL_DIR = DATA_DIR / "external"
 OUTPUT_DIR = REPO_ROOT / "outputs"

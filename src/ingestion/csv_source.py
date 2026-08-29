@@ -114,6 +114,23 @@ def coerce_types(df: pd.DataFrame, season: str | None = None) -> pd.DataFrame:
     return out
 
 
+def _is_synthetic(path: Path, frame: pd.DataFrame) -> bool:
+    """Two independent checks, because either alone can be defeated.
+
+    The filename catches a renamed-but-untouched export; the column catches a
+    file that was renamed to look real.
+    """
+    if path.name.upper().startswith("SYNTHETIC"):
+        return True
+    if "is_synthetic" in frame.columns:
+        flags = frame["is_synthetic"]
+        try:
+            return bool(flags.astype(str).str.lower().isin(("true", "1")).any())
+        except Exception:  # noqa: BLE001
+            return bool(flags.any())
+    return False
+
+
 def _parse_minutes(value) -> float:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return 0.0
@@ -141,12 +158,20 @@ def _parse_bool(value) -> bool:
 
 
 class CSVSource(DataSource):
-    """Loads game logs from any CSV/parquet already on disk."""
+    """Loads game logs from any CSV/parquet already on disk.
+
+    Refuses synthetic data by default. A `demo` run used to write its generated
+    seasons into data/raw/ alongside real game logs, and because every CSV in a
+    season directory is loaded, fake players ended up competing for slots on a
+    real draft board. Two independent checks now prevent that: the filename
+    prefix and an `is_synthetic` column in the data itself.
+    """
 
     name = "csv"
 
-    def __init__(self, root: Path | str | None = None):
+    def __init__(self, root: Path | str | None = None, allow_synthetic: bool = False):
         self.root = Path(root) if root else RAW_DIR
+        self.allow_synthetic = allow_synthetic
 
     def fetch_game_logs(self, season: str) -> pd.DataFrame:
         directory = self.root / season
@@ -163,7 +188,7 @@ class CSVSource(DataSource):
         if not files:
             raise FileNotFoundError(f"No .csv/.parquet files found in {directory}")
 
-        frames, skipped = [], []
+        frames, skipped, synthetic_skipped = [], [], []
         for path in files:
             raw = pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
             normalised = normalise_columns(raw)
@@ -176,6 +201,11 @@ class CSVSource(DataSource):
             if missing:
                 skipped.append((path.name, sorted(missing)))
                 continue
+
+            if not self.allow_synthetic and _is_synthetic(path, normalised):
+                synthetic_skipped.append(path.name)
+                continue
+
             frames.append(coerce_types(normalised, season))
 
         if not frames:
@@ -185,6 +215,11 @@ class CSVSource(DataSource):
                 "A game log needs at least a player column, a date column and the "
                 "box-score stats. See `python -m src.cli data-help`."
             )
+        if synthetic_skipped:
+            print(f"  !! IGNORED {len(synthetic_skipped)} SYNTHETIC file(s) in "
+                  f"{directory.name}: {', '.join(synthetic_skipped)}")
+            print("     These are generated demo data, not real players. Delete them:")
+            print(f"       Remove-Item '{directory}\\SYNTHETIC_*'")
         if skipped:
             names = ", ".join(name for name, _ in skipped)
             print(f"  note: ignored {len(skipped)} non-game-log file(s) in {directory.name}: {names}")
