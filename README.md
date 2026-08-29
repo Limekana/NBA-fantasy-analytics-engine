@@ -406,10 +406,33 @@ Keep a plain text file of who's been taken. Make it in Notepad, save it as
 `drafted.txt` in the project folder, one name per line:
 
 ```
+# round 1
 Nikola Jokic
 Luka Doncic
 Victor Wembanyama
 ```
+
+**Spelling is forgiving — don't fight the accents.** All of these find the right
+player:
+
+| You type | It finds |
+|---|---|
+| `Luka Doncic` | Luka Dončić |
+| `nikola jokic` | Nikola Jokić |
+| `Shai Gilgeous Alexander` | Shai Gilgeous-Alexander |
+| `PJ Washington` | P.J. Washington |
+| `DeAaron Fox` | De'Aaron Fox |
+| `Jaren Jackson` | Jaren Jackson Jr. |
+
+Accents, capitals, hyphens, apostrophes, periods, `Jr.`/`Sr.` suffixes and extra
+spaces are all ignored. Blank lines and lines starting with `#` are skipped, so
+you can keep notes in the file.
+
+**If you genuinely misspell a name**, the tool won't quietly ignore it — it
+prints a loud warning at the top of the output naming the unmatched entry and
+suggesting who you probably meant. Take that seriously: an unmatched name means
+that player is still being treated as available, so the recommendation below it
+may already be off the board.
 
 When you're on the clock:
 

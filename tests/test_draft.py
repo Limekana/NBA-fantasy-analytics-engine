@@ -9,6 +9,7 @@ from src.config import load_config
 from src.draft import (
     DraftAssistant,
     DraftSimulator,
+    format_recommendation,
     assign_tiers,
     board_to_players,
     build_draft_board,
@@ -306,3 +307,86 @@ def test_tiers_find_a_real_cliff(cfg):
     ])
     tiered = assign_tiers(frame, cfg.model)
     assert tiered["tier"].iloc[5] != tiered["tier"].iloc[6]
+
+
+# =========================================================================
+# Drafted-name matching must be forgiving, and loud when it fails
+# =========================================================================
+# Typing accented names correctly mid-draft is not realistic, and a strict
+# comparison fails in the worst possible way: the player silently stays on the
+# board and gets recommended after they are already gone.
+
+@pytest.fixture
+def real_name_board(cfg):
+    names = [
+        "Nikola Jokić", "Luka Dončić", "Shai Gilgeous-Alexander",
+        "Victor Wembanyama", "Jaren Jackson Jr.", "P.J. Washington",
+        "De'Aaron Fox", "Jayson Tatum", "Anthony Davis", "Trae Young",
+    ]
+    rows = [
+        {
+            "player_id": f"P{i}", "player_name": name, "team": "BOS",
+            "position": ["PG", "SG", "SF", "PF", "C"][i % 5],
+            "projected_season_value": float(900 - i * 40),
+            "projected_fp_game": 45.0 - i, "projected_games": 70.0,
+            "lockin_value": 48.0 - i, "lock_in_advantage": 5.0,
+            "games_per_week": 3.4, "median_fp": 40.0, "floor": 25.0,
+            "ceiling": 55.0, "std_dev": 10.0, "risk": 0.3,
+            "archetype": "balanced", "assumption_notes": "", "is_synthetic": False,
+        }
+        for i, name in enumerate(names)
+    ]
+    return build_draft_board(pd.DataFrame(rows), cfg.league, cfg.model)
+
+
+@pytest.mark.parametrize(
+    "typed,expected",
+    [
+        ("Luka Doncic", "Luka Dončić"),                       # no accents
+        ("luka doncic", "Luka Dončić"),                       # all lowercase
+        ("  Luka Doncic  ", "Luka Dončić"),                   # stray whitespace
+        ("Nikola Jokic", "Nikola Jokić"),
+        ("Shai Gilgeous Alexander", "Shai Gilgeous-Alexander"),  # no hyphen
+        ("PJ Washington", "P.J. Washington"),                 # no periods
+        ("DeAaron Fox", "De'Aaron Fox"),                      # no apostrophe
+        ("Jaren Jackson", "Jaren Jackson Jr."),               # no suffix
+    ],
+)
+def test_drafted_names_match_without_exact_spelling(real_name_board, cfg, typed, expected):
+    assistant = DraftAssistant(real_name_board, cfg.league, cfg.model)
+    remaining = set(assistant._remaining([typed])["player_name"])
+    assert expected not in remaining, f"{typed!r} failed to remove {expected!r}"
+    assert assistant.unmatched_names([typed]) == []
+
+
+def test_a_real_typo_is_reported_with_a_suggestion(real_name_board, cfg):
+    assistant = DraftAssistant(real_name_board, cfg.league, cfg.model)
+    problems = assistant.unmatched_names(["Victor Wembanyma"])
+    assert len(problems) == 1
+    name, suggestions = problems[0]
+    assert name == "Victor Wembanyma"
+    assert "Victor Wembanyama" in suggestions
+
+
+def test_typo_leaves_the_player_available_and_says_so(real_name_board, cfg):
+    """The dangerous case: a mistyped name must never fail silently."""
+    assistant = DraftAssistant(real_name_board, cfg.league, cfg.model)
+    package = assistant.recommend(
+        my_slot=3, current_pick=8, drafted_names=["Victor Wembanyma"], n_simulations=50
+    )
+    assert package["unmatched_drafted"]
+
+    rendered = format_recommendation(package)
+    assert "WARNING" in rendered
+    assert "matched NOBODY" in rendered
+    assert "Victor Wembanyama" in rendered      # the suggestion
+
+
+def test_correctly_spelled_names_produce_no_warning(real_name_board, cfg):
+    assistant = DraftAssistant(real_name_board, cfg.league, cfg.model)
+    package = assistant.recommend(
+        my_slot=3, current_pick=8,
+        drafted_names=["Nikola Jokic", "Luka Doncic"], n_simulations=50,
+    )
+    assert package["unmatched_drafted"] == []
+    assert "WARNING" not in format_recommendation(package)

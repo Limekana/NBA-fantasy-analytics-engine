@@ -687,12 +687,24 @@ def _find_board(cfg) -> Path | None:
 
 
 def _read_names(value: str | None) -> list[str]:
-    """Names from a comma-separated string or a newline-delimited file."""
+    """Names from a comma-separated string or a newline-delimited file.
+
+    Read as utf-8-sig, not utf-8: Notepad on Windows saves a byte-order mark by
+    default, which utf-8 decoding leaves as an invisible character on the first
+    line - so the first player in the file would never match anything.
+
+    Blank lines and lines starting with # are ignored, so the file can be kept
+    as a working scratchpad during the draft.
+    """
     if not value:
         return []
     path = Path(value)
     if path.exists():
-        return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+        return [
+            line.strip() for line in lines
+            if line.strip() and not line.strip().startswith("#")
+        ]
     return [part.strip() for part in value.split(",") if part.strip()]
 
 

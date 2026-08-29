@@ -580,3 +580,34 @@ def test_name_normalisation_matches_real_source_variants(left, right):
 def test_name_normalisation_keeps_different_players_apart():
     assert normalise_name("Jaylen Brown") != normalise_name("Jalen Brown")
     assert normalise_name("Marcus Morris") != normalise_name("Markieff Morris")
+
+
+# =========================================================================
+# drafted.txt is written in Notepad on Windows
+# =========================================================================
+
+def test_notepad_byte_order_mark_does_not_break_the_first_name(tmp_path):
+    """Notepad saves UTF-8 *with BOM* by default. Decoding as plain utf-8 leaves
+    an invisible character on line 1, so the first player never matches."""
+    from src.cli import _read_names
+
+    path = tmp_path / "drafted.txt"
+    path.write_text("Nikola Jokic\nLuka Doncic\n", encoding="utf-8-sig")
+    assert _read_names(str(path)) == ["Nikola Jokic", "Luka Doncic"]
+
+
+def test_drafted_file_ignores_blanks_and_comments(tmp_path):
+    from src.cli import _read_names
+
+    path = tmp_path / "drafted.txt"
+    path.write_text(
+        "# round 1\n\nNikola Jokic\n\n  Luka Doncic  \n# round 2\nJayson Tatum\n",
+        encoding="utf-8-sig",
+    )
+    assert _read_names(str(path)) == ["Nikola Jokic", "Luka Doncic", "Jayson Tatum"]
+
+
+def test_drafted_names_also_accepted_inline(tmp_path):
+    from src.cli import _read_names
+
+    assert _read_names("Nikola Jokic, Luka Doncic") == ["Nikola Jokic", "Luka Doncic"]

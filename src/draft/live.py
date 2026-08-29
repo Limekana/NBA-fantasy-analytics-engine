@@ -16,12 +16,14 @@ slightly worse player who certainly will not be.
 """
 from __future__ import annotations
 
+import difflib
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
 
+from src.adp.loader import normalise_name
 from src.draft.simulator import DraftSimulator, board_to_players, picks_for_slot
 
 
@@ -49,14 +51,55 @@ class DraftAssistant:
 
     def __init__(self, board: pd.DataFrame, league_cfg, model_cfg: Mapping, rng=None):
         self.board = board.reset_index(drop=True)
+        self._lookup_cache: dict[str, list] | None = None
         self.league = league_cfg
         self.model_cfg = model_cfg
         self.simulator = DraftSimulator(model_cfg, league_cfg, rng=rng)
 
     def _remaining(self, drafted_names: Sequence[str]) -> pd.DataFrame:
-        taken = {str(n).strip().lower() for n in drafted_names}
-        mask = ~self.board["player_name"].str.strip().str.lower().isin(taken)
-        return self.board[mask]
+        return self.board[~self.board.index.isin(self._taken_index(drafted_names))]
+
+    def _taken_index(self, drafted_names: Sequence[str]) -> set:
+        """Board rows matching the drafted names, matched forgivingly.
+
+        Names are matched on their normalised form, so mid-draft typing does not
+        have to reproduce accents, hyphens, punctuation or suffixes: "Luka
+        Doncic" finds "Luka Dončić", "PJ Washington" finds "P.J. Washington".
+        A strict comparison would fail silently and, far worse, leave an already
+        drafted player on the board to be recommended again.
+        """
+        lookup = self._name_lookup()
+        taken: set = set()
+        for name in drafted_names:
+            key = normalise_name(name)
+            if key in lookup:
+                taken.update(lookup[key])
+        return taken
+
+    def _name_lookup(self) -> dict[str, list]:
+        if self._lookup_cache is None:
+            lookup: dict[str, list] = {}
+            for index, name in self.board["player_name"].items():
+                lookup.setdefault(normalise_name(name), []).append(index)
+            self._lookup_cache = lookup
+        return self._lookup_cache
+
+    def unmatched_names(self, drafted_names: Sequence[str]) -> list[tuple[str, list[str]]]:
+        """Drafted names that matched nobody, each with close suggestions.
+
+        This is the failure that actually costs picks: a mistyped name leaves a
+        player on the board, and the assistant confidently recommends someone who
+        is already gone. It must be reported loudly, never swallowed.
+        """
+        lookup = self._name_lookup()
+        board_names = list(self.board["player_name"])
+        problems: list[tuple[str, list[str]]] = []
+        for name in drafted_names:
+            if normalise_name(name) in lookup:
+                continue
+            suggestions = difflib.get_close_matches(str(name), board_names, n=3, cutoff=0.6)
+            problems.append((str(name), suggestions))
+        return problems
 
     def recommend(
         self,
@@ -131,6 +174,7 @@ class DraftAssistant:
         best_fall = max(falls, key=lambda r: r.value) if falls else None
 
         return {
+            "unmatched_drafted": self.unmatched_names(drafted_names),
             "current_pick": current_pick,
             "next_pick": next_pick,
             "picks_until_next": (next_pick - current_pick) if next_pick else None,
@@ -223,6 +267,20 @@ def format_recommendation(package: dict) -> str:
         return package["error"]
 
     out: list[str] = []
+
+    unmatched = package.get("unmatched_drafted") or []
+    if unmatched:
+        out.append("!" * 72)
+        out.append("WARNING - these drafted names matched NOBODY on the board:")
+        for name, suggestions in unmatched:
+            hint = f"   did you mean: {', '.join(suggestions)}" if suggestions else "   (no close match found)"
+            out.append(f"  x {name}")
+            out.append(hint)
+        out.append("")
+        out.append("They are still being treated as AVAILABLE, so a recommendation")
+        out.append("below may already be off the board. Fix the spelling and re-run.")
+        out.append("!" * 72)
+
     pick = package["current_pick"]
     next_pick = package["next_pick"]
     out.append("=" * 72)
