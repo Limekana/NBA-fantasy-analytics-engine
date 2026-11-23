@@ -9,6 +9,9 @@ editing the file (which Rule 2 forbids anyway).
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
+import json
+import re
 
 import pandas as pd
 
@@ -157,6 +160,40 @@ def _parse_bool(value) -> bool:
     return str(value).strip().lower() in ("1", "true", "t", "yes", "y", "started")
 
 
+def game_log_files(directory):
+    """Select a validated refresh snapshot, or original legacy files.
+
+    Refresh never overwrites old raw downloads. An invalid pointer fails closed.
+    """
+    directory = Path(directory)
+    pointer = directory / 'current.json'
+    if pointer.exists():
+        item = json.loads(pointer.read_text(encoding='utf-8'))
+        path = (directory / item['file']).resolve()
+        if not path.is_relative_to(directory.resolve()) or path.suffix != '.csv':
+            raise ValueError('Invalid game-log snapshot path')
+        if hashlib.sha256(path.read_bytes()).hexdigest() != item['sha256']:
+            raise ValueError('Game-log snapshot checksum mismatch')
+        return [path]
+    return sorted(p for p in directory.iterdir() if p.suffix.lower() in ('.csv', '.parquet'))
+
+
+def discover_seasons(root, before=None):
+    """Return seasons with usable raw-log files, optionally before a target season."""
+    root = Path(root)
+    if not root.exists():
+        return []
+    found = []
+    for directory in root.iterdir():
+        if not directory.is_dir() or not re.fullmatch(r'\d{4}-\d{2}', directory.name):
+            continue
+        if before is not None and directory.name >= str(before):
+            continue
+        if game_log_files(directory):
+            found.append(directory.name)
+    return sorted(found)
+
+
 class CSVSource(DataSource):
     """Loads game logs from any CSV/parquet already on disk.
 
@@ -182,9 +219,7 @@ class CSVSource(DataSource):
                 f"`python -m src.cli ingest --season {season} --source nba_api` "
                 f"from a machine with network access."
             )
-        files = sorted(
-            [p for p in directory.iterdir() if p.suffix.lower() in (".csv", ".parquet")]
-        )
+        files = game_log_files(directory)
         if not files:
             raise FileNotFoundError(f"No .csv/.parquet files found in {directory}")
 

@@ -176,7 +176,8 @@ def cmd_check_config(args) -> int:
     print(f"  double-double categories : {', '.join(cfg.scoring.dd_categories)} (>= {cfg.scoring.dd_threshold})")
     print(f"  TD also pays DD          : {cfg.scoring.td_stacks}   [VERIFIED against Sleeper docs]")
     print(f"  50+ also pays 40+        : {cfg.scoring.point_thresholds_stack}   "
-          f"[** UNVERIFIED ASSUMPTION - confirm in your league's Sleeper UI **]")
+          + ('[CONFIRMED by league manager]' if cfg.scoring.rules.get('points_thresholds_stack_verified')
+             else '[UNVERIFIED: confirm in Sleeper]'))
 
     slot = cfg.league.draft.get("my_draft_slot")
     print(f"\nDraft slot: {slot if slot else 'NOT SET (set draft.my_draft_slot after the lottery)'}")
@@ -384,8 +385,17 @@ def cmd_build_board(args) -> int:
     """Run the pipeline on whatever real data is in data/raw/."""
     cfg = load_config()
     _print_header("BUILD DRAFT BOARD")
-    seasons = args.seasons or ["2025-26", "2024-25", "2023-24"]
+    from src.ingestion.csv_source import discover_seasons
+    target_season = cfg.league.raw.get("meta", {}).get("season")
+    seasons = args.seasons or discover_seasons(cfg.paths["raw"], before=target_season)[-3:]
+    if not seasons:
+        seasons = sorted(cfg.model["projection"]["season_weights"], reverse=True)
     players, schedule = _auto_discover(cfg, args.players, args.schedule)
+    from src.league.storage import enrich_birth_dates
+    try:
+        players, _birth_date_sources = enrich_birth_dates(cfg, players)
+    except FileNotFoundError:
+        pass
     return _run_and_report(cfg, seasons, players=players, schedule=schedule, verbose=args.verbose)
 
 
@@ -525,7 +535,10 @@ def cmd_backtest(args) -> int:
     cfg = load_config()
     _print_header("BACKTEST")
 
-    seasons = args.seasons or ["2025-26", "2024-25", "2023-24"]
+    from src.ingestion.csv_source import discover_seasons
+    seasons = args.seasons or discover_seasons(cfg.paths["raw"])
+    if not seasons:
+        seasons = sorted(cfg.model["projection"]["season_weights"], reverse=True)
     try:
         logs = load_seasons(cfg, seasons)
     except FileNotFoundError as exc:
@@ -533,6 +546,11 @@ def cmd_backtest(args) -> int:
         return 1
 
     discovered, _schedule = _auto_discover(cfg, args.players, None)
+    from src.league.storage import enrich_birth_dates
+    try:
+        discovered, _birth_date_sources = enrich_birth_dates(cfg, discovered)
+    except FileNotFoundError:
+        pass
     # derive_players reconciles external metadata onto the game logs' own ids;
     # the two sources do not share an id space, so this must not be a plain merge.
     players = derive_players(logs, discovered)
@@ -548,6 +566,19 @@ def cmd_backtest(args) -> int:
         print("\n*** SYNTHETIC DATA - these results validate the BACKTEST MACHINERY,")
         print("    not the model. Real conclusions need real game logs. ***")
 
+    available_seasons = sorted(scored["season"].dropna().astype(str).unique())
+    if args.target_season:
+        target = args.target_season
+    else:
+        qualified_targets = []
+        for season, season_logs in scored.groupby("season"):
+            games_by_player = season_logs.groupby("player_id").size()
+            qualified = int((games_by_player >= args.min_games).sum())
+            minimum_qualified = max(20, min(50, int(games_by_player.size * 0.25)))
+            if qualified >= minimum_qualified:
+                qualified_targets.append(str(season))
+        target = max(qualified_targets) if qualified_targets else (available_seasons[-1] if available_seasons else None)
+
     # --- 1. Lock-In strategies on real weekly sequences ---
     print("\n" + "-" * 72)
     print("LOCK-IN STRATEGY BACKTEST")
@@ -555,7 +586,8 @@ def cmd_backtest(args) -> int:
     print("Replays each locking policy over actual chronological fantasy weeks.")
     print("No projection involved - this is what each rule would have banked.\n")
     try:
-        lockin = backtest_lockin_strategies(scored, cfg, season=args.lockin_season)
+        lockin_logs = scored if target is None else scored[scored["season"].astype(str) <= str(target)]
+        lockin = backtest_lockin_strategies(lockin_logs, cfg, season=args.lockin_season)
         frame = lockin.to_frame()
         print(frame.to_string(index=False))
         print(f"\n{lockin.n_weeks:,} player-weeks across {lockin.n_players} players")
@@ -578,8 +610,6 @@ def cmd_backtest(args) -> int:
     print("\n" + "-" * 72)
     print("PROJECTION BACKTEST")
     print("-" * 72)
-    available_seasons = sorted(scored["season"].dropna().unique())
-    target = args.target_season or (available_seasons[-1] if available_seasons else None)
     if target is None or len(available_seasons) < 2:
         print("\n  SKIPPED: needs at least two seasons of data.")
         print(f"  Seasons present: {available_seasons or 'none'}")
@@ -590,6 +620,15 @@ def cmd_backtest(args) -> int:
     if args.min_games != 20:
         print(f"\n  (min_games={args.min_games}: small-sample players included)")
     print(f"\nTraining on seasons before {target}; predicting {target}.")
+    from src.league.storage import load_archived_player_metadata
+    try:
+        historical_metadata, _metadata_sources = load_archived_player_metadata(cfg, target)
+        has_historical_positions = 'sleeper_positions' in historical_metadata.columns
+    except FileNotFoundError:
+        has_historical_positions = False
+    if not has_historical_positions and cfg.model['projection'].get('shrinkage_games_k', 0):
+        print(f"  CAVEAT: no archived player positions for {target}; current positions are used where available.")
+        print("          Position-based shrinkage findings for this holdout are provisional.")
     print("Scored on rank correlation, because drafting is a ranking problem.\n")
     try:
         metrics, comparison = backtest_projections(
@@ -700,12 +739,12 @@ def cmd_backtest(args) -> int:
                     print(f"  - Removing '{row.variant}' would gain {row.removing_helps_by:+.4f} Spearman.")
                 best = hurting.sort_values("removing_helps_by", ascending=False).iloc[0]
                 print(f"\n  Biggest offender: {best['variant']}")
-                _suggest_fix(str(best["variant"]))
+                _suggest_fix(str(best["variant"]), cfg)
         except ValueError as exc:
             print(f"  could not run: {exc}")
 
         print("\n\nWHICH METHOD TO SET")
-        print("  config/model.yaml -> projection.method")
+        print(f"  config/model.yaml -> projection.method (currently {cfg.model['projection'].get('method', 'model')})")
         print()
         print("    blend         last season's rates, KEEPING the age curve and")
         print("                  shrinkage. Start here if 'last_season_only' is the")
@@ -713,7 +752,9 @@ def cmd_backtest(args) -> int:
         print("    last_season   last season's rates, dropping age curve AND")
         print("                  shrinkage too. Use only if those also show up as")
         print("                  hurting in the table above.")
-        print("    model         the multi-season blend (current default).")
+        print("    model         the configured weighted multi-season rate blend.")
+        print("                  This differs from 'blend', which uses the most")
+        print("                  recent season only.")
         print()
         print("  Whichever you pick, you keep Lock-In valuation, distributions, the")
         print("  games-played model, schedule and risk on top. None of those come")
@@ -1139,7 +1180,7 @@ def cmd_verify_league(args) -> int:
     return 0
 
 
-def _suggest_fix(variant: str) -> None:
+def _suggest_fix(variant: str, cfg=None) -> None:
     """Concrete next step for whichever component is hurting."""
     advice = {
         "last_season_only": (
@@ -1172,14 +1213,12 @@ def _suggest_fix(variant: str) -> None:
             "    ranking top-20, and those players are excluded here by construction,\n"
             "    so this measurement is blind to the thing shrinkage protects against.\n"
             "\n"
-            "    REDUCE it rather than removing it. With k=20 and a typical 65-game\n"
-            "    season the prior gets ~24% weight, which is heavy for an established\n"
-            "    player. Try:\n"
-            "        projection:\n"
-            "          shrinkage_games_k: 8\n"
-            "    Then confirm with:  backtest --diagnose --min-games 5\n"
-            "    which lowers the threshold so small-sample players are included and\n"
-            "    shrinkage is judged on the players it actually exists for."
+            "    Do not remove or change it from this single holdout alone. The\n"
+            "    current setting is k=" + str((cfg or load_config()).model['projection'].get('shrinkage_games_k', 20)) + ".\n"
+            "    Compare a smaller value against the current one, then run:\n"
+            "        python -m src.cli backtest --diagnose --min-games 5\n"
+            "    That broader sample includes more small-sample players, although\n"
+            "    it still cannot validate rookies with no prior-season data."
         ),
         "no_bonus_projection": (
             "    The bonus projection is adding noise. Its tail exponents are a\n"
@@ -1348,6 +1387,8 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--league-id")
     verify.set_defaults(func=cmd_verify_league)
 
+    from src.league.cli import register
+    register(sub)
     return parser
 
 

@@ -94,9 +94,16 @@ def project_games_played(
     if injury_assumption:
         multiplier = float(injury_assumption.get("availability_multiplier", 1.0))
         games_missed = float(injury_assumption.get("games_missed", 0.0))
+        if not np.isfinite(multiplier) or not 0 <= multiplier <= 1 or not np.isfinite(games_missed) or not 0 <= games_missed <= season_length:
+            raise ValueError('Injury multiplier must be in [0, 1] and games missed within the season')
         availability = availability * multiplier - (games_missed / season_length)
         note = injury_assumption.get("note", "")
         notes.append(f"ASSUMPTION: {note}" if note else "ASSUMPTION: manual injury override")
+
+        # A reviewed full-absence assumption must not be resurrected by the
+        # historical model's 2% floor or its beta uncertainty distribution.
+        if availability <= 0:
+            return GamesPlayedProjection(player_id, 0.0, 0.0, 0.0, 0.0, 0.0, '; '.join(notes))
 
     availability = float(np.clip(availability, 0.02, 0.99))
 

@@ -1,5 +1,12 @@
 # Trade evaluation
 
+September 6 update: the original one-roster API remains supported. The new
+post-draft layer adds ownership validation, two-sided evaluation, marginal cuts,
+replacement claims, team profiles, partner screening and separate playoff values.
+See [league_state.md](league_state.md) for the schemas, commands and exact
+assumptions. New league forecasts distinguish conditional weekly value from
+weekly availability; game availability is no longer used as a weekly outage rate.
+
 ## The question
 
 "Is this trade good?" is not answerable in the abstract. The answerable question
@@ -62,21 +69,42 @@ dashboard print the list lowest-first for that reason.
 
 ### The cost of absences
 
-Each starter's marginal value, weighted by the probability they are unavailable,
-summed. Depth therefore shows up automatically: on a deep roster the marginal
-values are small and the depth cost is small; on a top-heavy one, both are large.
+Expected strength now averages the best legal lineup over joint availability
+of **all** players, including backups. An unavailable backup contributes zero;
+two absent starters cannot both use the same replacement. Depth cost is the
+healthy total minus this expectation. Healthy single-outage losses remain useful
+descriptions, but are no longer summed to estimate roster strength.
 
 The alternative — multiplying every player's value by their availability — prices
 an absence as though nobody replaced the missing player. That is never what
 happens, and it systematically overvalues durability while hiding the value of a
 bench.
 
-**Known approximation.** Absences are priced one at a time. Two starters out in
-the same week costs more than the sum of the two individual costs, because the
-second hole is filled from a shallower bench. This understates what a thin roster
-gives up, so the model is mildly *generous* to trades that strip depth. Correcting
-it means simulating joint absences, which is possible but would trade a large
-amount of inspectability for a second-order term.
+**Known approximation.** Weekly availability is independent between players.
+Leagues with up to eight active roster spots are integrated exactly; others use 512
+fixed antithetic scenarios, keyed by stable player IDs and shared across trades.
+This is an approximation, not an exact season forecast or a confidence interval.
+Small differences can reflect numerical integration error as well as projection
+error. Team-wide correlated absences and recovery dates are not inferred.
+The integration mode is fixed by league size, so removing a player cannot switch
+methods and manufacture a gain. Adding a zero-availability player has zero value.
+
+The two-team manual evaluator and up to 60 automatic-search finalists use exact
+enumeration of joint weekly availability (bounded to 20 uncertain assets). All
+displayed automatic offers are filtered and ranked again using those exact
+values, including roster cuts, claims, projection stress and injury sensitivity.
+This removes numerical screening error from displayed offers, not uncertainty
+in player projections or the independence assumption. Broad profile screens
+remain approximate and may differ slightly from exact evaluator baselines.
+
+Automatic trades and suggested claims exclude injury-flagged assets. Both teams
+must also avoid a loss when all remaining flagged players are unavailable
+together (your side must improve). With robust filtering enabled, that scenario
+also receives the selected projection stress. This tests dependence on injured
+cover; it does **not** assume flagged players miss the entire season. Manual
+offers remain inspectable but moving flagged assets requires injury review.
+Blank injury metadata is not verified health. Flags reflect the saved Sleeper
+observation, whose date is shown in the dashboard.
 
 ## Pricing draft picks
 
@@ -139,16 +167,14 @@ rookies, injury returns, or anyone whose role you are guessing at.
 
 - **Opponent-specific schedule.** Lock-In is a points format; who you play in a
   given week does not change what your lineup is worth.
-- **Playoff-week schedules.** `src/schedule/weeks.py` can compute per-team
-  games-per-week for the playoff weeks, and a trade for a player whose team is
-  game-dense in weeks 23+ is genuinely worth more than the season average says.
-  This is not yet wired into the trade verdict. It is the most valuable
-  outstanding improvement here.
+- **Playoff-week schedules in the legacy command.** Use the new `league-trade
+  --horizon playoffs` or League desk for a separate playoff-window result. The
+  legacy one-roster `trade` command retains its supplied board's horizon.
 - **Trade-market psychology.** Whether the other manager will accept is not a
   quantitative question, and pretending otherwise would be dressing up a guess.
-- **Roster moves after the trade.** Waiver pickups that would fill a hole the
-  trade creates are ignored, so a deal that leaves an unfillable slot is graded
-  at its worst case. The flag tells you when that is happening.
+- **Roster moves in the legacy command.** Automatic replacement claims are
+  modeled in `league-trade`, with waiver-access caveats; the old `trade` command
+  remains a no-replacement evaluation. Both paths now cut by marginal impact.
 
 ## Commands
 

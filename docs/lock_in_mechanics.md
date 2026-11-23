@@ -92,19 +92,18 @@ Source: [Sleeper Support — What scoring settings are available?](https://suppo
 
 ---
 
-## 3. 40+ / 50+ point stacking — **UNVERIFIED. ACTION REQUIRED.**
+## 3. 40+ / 50+ point stacking — confirmed by league manager, September 6, 2026
 
-**This could not be confirmed.** Sleeper's general documented principle is that
-scoring settings stack, and 40+/50+ are separate independent threshold settings,
-so stacking is the more likely behaviour — but no source states it explicitly and
-the primary documentation was unreachable from the build environment.
+The user explicitly confirmed that these thresholds stack in this league. The
+live league also reports 40+ = 3 and 50+ = 4. API weights alone do not prove
+interaction behavior; the stacking confirmation comes from the league manager.
 
-**Current assumption:** `bonus_rules.points_thresholds_stack: true`
+**Confirmed setting:** `bonus_rules.points_thresholds_stack: true`
 → a 50-point game pays **3 + 4 = 7**.
 **If false**, it pays only **4**, and every high-scoring player is overvalued by
 3 points per 50-point game.
 
-### How to close this in two minutes
+### Optional regression check when settings change
 
 ```bash
 python -m src.cli scoring-check

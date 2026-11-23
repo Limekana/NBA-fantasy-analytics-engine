@@ -28,7 +28,7 @@ projection:
   # projection that demonstrably ranks at least as well.
   #
   # Handoff Rule 5: do not keep complexity that has not earned its place.
-  method: model
+  method: blend
 
   # Weight on each prior season when blending per-minute production.
   # Recency-weighted; must be > 0 and are renormalised over available seasons.
@@ -39,7 +39,7 @@ projection:
 
   # Shrinkage toward positional mean for small samples (games).
   # rate = (n*player_rate + k*positional_rate) / (n + k)
-  shrinkage_games_k: 20
+  shrinkage_games_k: 8
 
   # Age curve applied to per-minute production. Piecewise-linear multiplier on
   # projected rates, anchored at the listed ages. ASSUMPTION - see docs/assumptions.md.
@@ -62,17 +62,37 @@ projection:
     max_minutes: 38.0           # sanity cap
     min_minutes: 8.0
 
+in_season:
+  # Games already played in the projected season update each projection.
+  # Minutes weight = games/(games + minutes_games_k); per-minute rate weight =
+  # minutes/(minutes + rate_games_k*36). Chosen on 2024-25, validated on 2025-26
+  # and the reverse: rest-of-season FP/game Spearman after 7 days 0.787->0.853
+  # and 0.882->0.908, after 28 days 0.777->0.877 and 0.873->0.922.
+  enabled: true
+  minutes_games_k: 4
+  rate_games_k: 10
+
+weekly_availability:
+  # ASSUMPTION: mixture of independent missed games and whole-week absences.
+  # 0 = independent; 1 = all-or-none. Not yet calibrated against injury spells.
+  correlation: 0.5
+
 games_played:
-  # Baseline availability by age band (fraction of 82). ASSUMPTION.
+  # Baseline availability by age band (fraction of 82). Calibrated 2026-10-29:
+  # the previous 0.88/0.86/0.83/0.76/0.68 with history_weight 0.65 overstated
+  # games played by +0.11 (2024-25) and +0.10 (2025-26) for players who played.
+  # These values (x0.70) with history_weight 0.50 were chosen on each holdout
+  # separately and gave bias +0.003/+0.002 and RMSE 0.254->0.226 / 0.274->0.252
+  # on the other one. Refit when another season completes.
   baseline_availability:
-    22: 0.88
-    26: 0.86
-    30: 0.83
-    34: 0.76
-    38: 0.68
+    22: 0.616
+    26: 0.602
+    30: 0.581
+    34: 0.532
+    38: 0.476
 
   # Weight on a player's own multi-season availability history vs the age baseline.
-  history_weight: 0.65
+  history_weight: 0.50
   season_length: 82
 
   # Beta distribution concentration for availability uncertainty. Lower = more

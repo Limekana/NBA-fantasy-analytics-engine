@@ -133,6 +133,59 @@ def _season_actuals(scored: pd.DataFrame, season: str) -> pd.DataFrame:
     )
 
 
+def _align_backtest_ages(players: pd.DataFrame, target_season: str,
+                        scored_logs: pd.DataFrame, cfg) -> pd.DataFrame:
+    """Remove present-day age leakage when DOB is unavailable in metadata."""
+    if 'age' not in players.columns:
+        return players
+    out = players.copy()
+    ages = pd.to_numeric(out['age'], errors='coerce')
+    target_year = int(str(target_season)[:4])
+    source_season = str(cfg.league.raw.get('meta', {}).get('season', ''))
+    source_year = int(source_season[:4]) if source_season[:4].isdigit() else target_year
+    first_year = min((int(str(s)[:4]) for s in scored_logs['season'].dropna().unique()
+                      if str(s)[:4].isdigit()), default=target_year)
+    has_birth_date = (out['birth_date'].notna() if 'birth_date' in out.columns
+                      else pd.Series(False, index=out.index))
+    synthetic = (out['is_synthetic'].astype(str).str.lower().isin(('true', '1'))
+                 if 'is_synthetic' in out.columns else pd.Series(False, index=out.index))
+    sleeper_linked = (out['sleeper_id'].notna() if 'sleeper_id' in out.columns
+                      else pd.Series(False, index=out.index))
+    # Sleeper ages refer to the configured current season; generated fixture
+    # ages refer to their first season. The projection layer advances by one.
+    shift = pd.Series(0, index=out.index, dtype='int64')
+    shift.loc[sleeper_linked & ~has_birth_date] = target_year - source_year - 1
+    shift.loc[synthetic & ~has_birth_date] = target_year - first_year - 1
+    out['age'] = ages + shift
+    return out
+
+
+def _align_backtest_positions(players: pd.DataFrame, target_season: str, cfg) -> pd.DataFrame:
+    """Prefer the Sleeper player positions archived for the holdout season."""
+    if 'sleeper_id' not in players.columns:
+        return players
+    try:
+        from src.league.storage import load_archived_player_metadata
+        archived, _sources = load_archived_player_metadata(cfg, target_season)
+    except FileNotFoundError:
+        return players
+    if 'sleeper_positions' not in archived.columns:
+        return players
+    mapping = dict(zip(archived.sleeper_id.astype(str), archived.sleeper_positions.fillna('').astype(str)))
+    out = players.copy()
+    positions = out.sleeper_id.astype(str).map(mapping).replace('', pd.NA)
+    if 'positions' in out:
+        out['positions'] = positions.combine_first(out['positions'])
+    else:
+        out['positions'] = positions
+    primary = positions.map(lambda value: value.split('|')[0] if pd.notna(value) else pd.NA)
+    if 'position' in out:
+        out['position'] = primary.combine_first(out['position'])
+    else:
+        out['position'] = primary
+    return out
+
+
 def backtest_projections(
     scored_logs: pd.DataFrame,
     players: pd.DataFrame,
@@ -152,6 +205,15 @@ def backtest_projections(
       * ``prior_minutes``    - minutes alone, a pure opportunity proxy.
       * ``model``            - our projection.
     """
+    # NBA CSVs commonly parse player_id as int64, while the projection layer
+    # emits string IDs. Normalize both inputs before grouping and joining so a
+    # valid walk-forward backtest cannot silently end with an empty join.
+    scored_logs = scored_logs.copy()
+    scored_logs["player_id"] = scored_logs["player_id"].astype(str)
+    players = players.copy()
+    if "player_id" in players.columns:
+        players["player_id"] = players["player_id"].astype(str)
+
     seasons = sorted(scored_logs["season"].dropna().unique())
     if target_season not in seasons:
         raise ValueError(f"target season {target_season} not present in the data")
@@ -161,6 +223,9 @@ def backtest_projections(
             f"no seasons before {target_season}; a backtest needs at least one "
             "prior season to train on"
         )
+
+    players = _align_backtest_positions(players, target_season, cfg)
+    players = _align_backtest_ages(players, target_season, scored_logs, cfg)
 
     # --- STRICT: everything below sees only prior_seasons ---
     train = scored_logs[scored_logs["season"].isin(prior_seasons)]

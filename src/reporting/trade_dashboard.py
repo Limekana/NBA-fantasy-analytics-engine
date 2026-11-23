@@ -33,6 +33,8 @@ LINEUP_JS = r"""
 function eligibleSlots(player, cfg) {
   if (player.slots && player.slots.length) return player.slots;
   if (player.isPick) return cfg.slotNames;
+  if (player.positions && player.positions.length)
+    return Array.from(new Set(player.positions.flatMap(p => cfg.elig[p] || [])));
   return cfg.elig[player.position] || [];
 }
 
@@ -53,7 +55,11 @@ function seat(i, chosen, owner, seen, cfg) {
 }
 
 function optimalLineup(players, cfg) {
+  if (new Set(players.map(p => p.id)).size !== players.length) throw Error('Duplicate player ID');
+  if (players.some(p => !p.id || !Number.isFinite(p.value) || !Number.isFinite(p.availability) || p.availability < 0 || p.availability > 1)) throw Error('Invalid player value or availability');
+  const planned=new Set(cfg.plannedStarterIds||[]);
   const sorted = players.slice().sort(function (a, b) {
+    if(planned.has(a.id)!==planned.has(b.id))return Number(planned.has(b.id))-Number(planned.has(a.id));
     if (b.value !== a.value) return b.value - a.value;
     return String(a.id).localeCompare(String(b.id));
   });
@@ -61,6 +67,7 @@ function optimalLineup(players, cfg) {
   const chosen = [];
   let total = 0;
   for (let k = 0; k < sorted.length; k++) {
+    if (sorted[k].value < 0) continue;
     if (chosen.length >= cfg.slots.length) break;
     chosen.push(sorted[k]);
     const i = chosen.length - 1;
@@ -86,48 +93,98 @@ function optimalLineup(players, cfg) {
   return { total: total, assignments: assignments, bench: bench };
 }
 
-// Absences priced one at a time: what the lineup actually loses when a starter
-// sits, which is the gap to whoever slides up - not the starter's whole value.
+const jointValueCache=new Map(),availabilityDrawCache=new Map();
+function availabilityDraws(id) {
+  if(availabilityDrawCache.has(id))return availabilityDrawCache.get(id);
+  let seed=2166136261;
+  for(const byte of new TextEncoder().encode(id))seed=Math.imul(seed^byte,16777619)>>>0;
+  const draws=[];
+  for(let i=0;i<256;i++){
+    let x=(seed^Math.imul(i+1,0x9e3779b9))>>>0;
+    x=Math.imul(x^(x>>>16),0x7feb352d)>>>0;
+    x=Math.imul(x^(x>>>15),0x846ca68b)>>>0;x=(x^(x>>>16))>>>0;
+    const u=(x+.5)/4294967296;draws.push(u,1-u);
+  }
+  availabilityDrawCache.set(id,draws);return draws;
+}
+function jointExpectation(players,cfg) {
+  const planned=new Set(cfg.plannedStarterIds||[]);
+  const assets=players.filter(p=>p.value>0&&p.availability>0).map(p=>({id:p.id,value:p.value,availability:p.availability,
+    allowed:cfg.slots.map((s,i)=>eligibleSlots(p,cfg).includes(s)?i:-1).filter(i=>i>=0)}))
+    .sort((a,b)=>Number(planned.has(b.id))-Number(planned.has(a.id))||b.value-a.value||(a.id<b.id?-1:a.id>b.id?1:0));
+  const exact=!!cfg.exactAvailability||cfg.rosterLimit<=8;
+  const key=JSON.stringify([cfg.slots.length,exact,assets]);
+  if(jointValueCache.has(key))return jointValueCache.get(key);
+  const uncertain=assets.filter(p=>p.availability<1);
+  if(exact&&uncertain.length>20)throw Error('Exact availability supports at most 20 uncertain assets per roster');
+  function total(active){
+    const owner=new Array(cfg.slots.length).fill(-1);
+    function assign(i,seen){for(const s of active[i].allowed){
+      if(seen[s])continue;seen[s]=true;
+      if(owner[s]===-1||assign(owner[s],seen)){owner[s]=i;return true;}
+    }return false;}
+    let result=0;
+    for(let i=0;i<active.length;i++)if(assign(i,[]))result+=active[i].value;
+    return result;
+  }
+  let result=0;
+  if(exact||!uncertain.length){
+    const indices=new Map(uncertain.map((p,i)=>[p.id,i]));
+    for(let mask=0;mask<(1<<uncertain.length);mask++){
+      let weight=1;
+      uncertain.forEach((p,i)=>weight*=mask&(1<<i)?p.availability:1-p.availability);
+      result+=weight*total(assets.filter(p=>p.availability===1||(mask&(1<<indices.get(p.id)))));
+    }
+  }else{
+    const draws=new Map(uncertain.map(p=>[p.id,availabilityDraws(p.id)]));
+    for(let i=0;i<512;i++)result+=total(assets.filter(p=>p.availability===1||draws.get(p.id)[i]<p.availability))/512;
+  }
+  if(jointValueCache.size>=4096)jointValueCache.clear();
+  jointValueCache.set(key,result);return result;
+}
+
+// Joint absences include backups. Healthy single-outage losses are descriptive.
 function rosterStrength(players, cfg) {
   const healthy = optimalLineup(players, cfg);
   const marginal = {};
-  let expectedLoss = 0;
   for (let i = 0; i < healthy.assignments.length; i++) {
     const p = healthy.assignments[i].player;
     if (!p) continue;
     const without = players.filter(function (q) { return q.id !== p.id; });
     const loss = healthy.total - optimalLineup(without, cfg).total;
     marginal[p.id] = loss;
-    const avail = Math.min(Math.max(p.availability, 0), 1);
-    expectedLoss += (1 - avail) * loss;
   }
+  const expected=jointExpectation(players,cfg);
   return {
     healthy: healthy.total,
-    expected: healthy.total - expectedLoss,
-    depthCost: expectedLoss,
+    expected: expected,
+    depthCost: healthy.total-expected,
     lineup: healthy,
     marginal: marginal
   };
 }
 
 function scalePlayer(p, factor) {
-  return { id: p.id, name: p.name, position: p.position, value: p.value * factor,
-           availability: p.availability, isPick: p.isPick, slots: p.slots };
+  return { ...p, value: p.value * factor };
 }
 
 function evaluateTrade(roster, giveIds, getPlayers, cfg) {
+  if (new Set(giveIds).size !== giveIds.length ||
+      giveIds.some(id => !roster.some(p => p.id === id))) throw Error('Invalid outgoing ownership');
+  if (getPlayers.some(p => giveIds.includes(p.id))) throw Error('Player on both sides');
   const giving = {};
   giveIds.forEach(function (id) { giving[id] = true; });
   const kept = roster.filter(function (p) { return !giving[p.id]; });
   let after = kept.concat(getPlayers);
 
   const dropped = [];
-  if (after.length > cfg.rosterLimit) {
-    const ranked = after.slice().sort(function (a, b) { return a.value - b.value; });
-    const cut = ranked.slice(0, after.length - cfg.rosterLimit);
-    const cutIds = {};
-    cut.forEach(function (p) { cutIds[p.id] = true; dropped.push(p.name); });
-    after = after.filter(function (p) { return !cutIds[p.id]; });
+  if (new Set(after.map(p => p.id)).size !== after.length) throw Error('Duplicate incoming ownership');
+  while (after.length > cfg.rosterLimit) {
+    const ranked = after.map(p => ({p:p, v: Math.round(rosterStrength(after.filter(q => q.id !== p.id), cfg).expected * 1e8) / 1e8}));
+    ranked.sort((a,b) => b.v-a.v || (a.p.id < b.p.id ? 1 : a.p.id > b.p.id ? -1 : 0));
+    const cut = ranked[0].p;
+    dropped.push(cut.name);
+    after = after.filter(p => p.id !== cut.id);
   }
 
   const before = rosterStrength(roster, cfg);
@@ -337,11 +394,25 @@ var BY_ID = {};
 PLAYERS.forEach(function (p) { BY_ID[p.id] = p; });
 PICKS.forEach(function (p) { BY_ID[p.id] = p; });
 
-var STORE = 'nba_trade_dashboard_v1';
+var STORE = 'nba_trade_dashboard_v2_stable_ids';
 var state = { roster: [], give: [], get: [] };
 try {
   var saved = JSON.parse(localStorage.getItem(STORE) || 'null');
   if (saved && saved.roster) state = saved;
+  if (!saved) {
+    var legacy = JSON.parse(localStorage.getItem('nba_trade_dashboard_v1') || 'null');
+    if (legacy && legacy.roster) {
+      function migrateIds(ids) {
+        return (ids || []).map(function (id) {
+          if (BY_ID[id]) return id;
+          var matches = PLAYERS.filter(function (p) { return normalise(p.name) === id; });
+          return matches.length === 1 ? matches[0].id : null;
+        }).filter(Boolean);
+      }
+      state = {roster:migrateIds(legacy.roster),give:migrateIds(legacy.give),get:migrateIds(legacy.get)};
+      // The legacy record remains intact, so ambiguous entries can be recovered.
+    }
+  }
 } catch (e) { /* private browsing, or no storage. The page still works. */ }
 if (!state.roster.length && PRESET_ROSTER.length) state.roster = PRESET_ROSTER.slice();
 
@@ -360,7 +431,7 @@ function esc(s) {
 }
 function asLineupPlayer(p) {
   return { id: p.id, name: p.name, position: p.position, value: p.value,
-           availability: p.availability, isPick: !!p.isPick, slots: p.slots || [] };
+           availability: p.availability, isPick: !!p.isPick, slots: p.slots || [], positions: p.positions || [] };
 }
 
 // --- searchable add boxes -------------------------------------------------
@@ -673,6 +744,7 @@ def _player_payload(board: pd.DataFrame) -> list[dict]:
                 "name": player.name,
                 "team": team,
                 "position": player.position,
+                "positions": list(player.positions),
                 "value": round(player.weekly_value, 2),
                 "availability": round(player.availability, 3),
                 "isPick": False,

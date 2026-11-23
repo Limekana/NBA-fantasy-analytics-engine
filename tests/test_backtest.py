@@ -12,6 +12,7 @@ import pytest
 
 from src.backtest import (
     WEIGHT_PROFILES,
+    _align_backtest_ages,
     backtest_lockin_strategies,
     backtest_projections,
     score_predictions,
@@ -122,6 +123,43 @@ def test_projection_backtest_returns_model_and_baselines(cfg, multi_season):
     assert "model" in names
     assert "baseline_prior_fp_game" in names
     assert not comparison.empty
+
+
+def test_projection_backtest_normalizes_numeric_source_ids(cfg, multi_season):
+    players, scored = multi_season
+    numeric_players = players.copy()
+    numeric_logs = scored.copy()
+    id_map = {player_id: index + 1 for index, player_id in enumerate(players.player_id)}
+    numeric_players['player_id'] = numeric_players.player_id.map(id_map).astype(int)
+    numeric_logs['player_id'] = numeric_logs.player_id.map(id_map).astype(int)
+    metrics, comparison = backtest_projections(numeric_logs, numeric_players, cfg, '2025-26')
+    assert len(comparison) > 0
+    assert next(metric for metric in metrics if metric.name == 'model').n_players == len(comparison)
+
+
+def test_backtest_rewinds_sleeper_age_to_the_holdout(cfg):
+    metadata = pd.DataFrame([{'player_id': '1', 'sleeper_id': '1', 'age': 30.0}])
+    logs = pd.DataFrame({'season': ['2023-24', '2024-25']})
+    aligned = _align_backtest_ages(metadata, '2025-26', logs, cfg)
+    # Sleeper age is for config season 2026-27; project_players advances one year.
+    assert aligned.iloc[0].age == 28.0
+
+
+def test_projection_uses_birth_date_at_target_season_start(cfg):
+    from src.projections import compute_per36, project_players
+
+    logs = pd.DataFrame([{
+        'player_id': '1', 'season': '2024-25', 'minutes': 30.0,
+        'points': 20.0, 'rebounds': 5.0, 'assists': 4.0, 'steals': 1.0,
+        'blocks': 1.0, 'turnovers': 2.0, 'personal_fouls': 2.0,
+        'free_throws_made': 3.0, 'three_pointers_made': 2.0,
+    }])
+    metadata = pd.DataFrame([{
+        'player_id': '1', 'player_name': 'Player One', 'position': 'SG',
+        'age': 30.0, 'birth_date': '1996-03-03',
+    }])
+    projection = project_players(compute_per36(logs), metadata, cfg.model, cfg.assumptions)[0]
+    assert projection.age == 29.0
 
 
 def test_baselines_are_genuinely_predictive(cfg, multi_season):
@@ -341,6 +379,34 @@ def test_last_season_method_ignores_older_seasons(cfg, multi_season):
     assert projections
     for projection in projections:
         assert len(projection.seasons_used) <= 1
+
+
+@pytest.mark.parametrize("method", ["blend", "last_season"])
+def test_recent_only_methods_use_each_players_latest_available_season(cfg, method):
+    from src.config import config_with_overrides
+    from src.projections.baseline import RATE_STATS, project_players
+
+    def row(player_id, season, points_rate):
+        values = {f"{stat}_per36": 0.0 for stat in RATE_STATS}
+        values["points_per36"] = points_rate
+        return {"player_id": player_id, "season": season, "games": 82,
+                "minutes_per_game": 30.0, **values}
+
+    per36 = pd.DataFrame([
+        row("missed-latest", "2023-24", 10.0),
+        row("missed-latest", "2024-25", 20.0),
+        row("other-player", "2025-26", 30.0),
+    ])
+    players = pd.DataFrame([
+        {"player_id": pid, "player_name": pid, "team": "BOS", "position": "PG", "age": 25}
+        for pid in ("missed-latest", "other-player")
+    ])
+    variant = config_with_overrides({"model": {"projection": {"method": method}}}, base=cfg)
+
+    projections = project_players(per36, players, variant.model, variant.assumptions)
+    missed_latest = next(p for p in projections if p.player_id == "missed-latest")
+
+    assert missed_latest.seasons_used == ("2024-25",)
 
 
 def test_last_season_method_skips_the_age_curve(cfg, multi_season):

@@ -16,7 +16,7 @@ import pandas as pd
 
 def fantasy_week_start(dates: pd.Series, week_start_weekday: int = 1) -> pd.Series:
     """Map game dates to the start date of their fantasy week (default Mon-Sun)."""
-    normalised = pd.to_datetime(dates)
+    normalised = pd.to_datetime(dates, utc=True).dt.tz_localize(None).dt.normalize()
     offset = (normalised.dt.dayofweek + 1 - week_start_weekday) % 7
     return normalised - pd.to_timedelta(offset, unit="D")
 
@@ -31,27 +31,10 @@ def games_per_week_by_team(
     if schedule.empty:
         return {}
 
-    frame = schedule.copy()
-    if {"home_team", "away_team"}.issubset(frame.columns):
-        frame = pd.concat(
-            [
-                frame[["game_date", "home_team"]].rename(columns={"home_team": "team"}),
-                frame[["game_date", "away_team"]].rename(columns={"away_team": "team"}),
-            ],
-            ignore_index=True,
-        )
-    elif "team" not in frame.columns:
-        raise ValueError("schedule needs either home_team/away_team or team")
-
-    frame["week"] = fantasy_week_start(frame["game_date"], week_start_weekday)
-    counts = frame.groupby(["team", "week"]).size().reset_index(name="games")
-
-    result: dict[str, dict[int, float]] = {}
-    for team, group in counts.groupby("team"):
-        total = len(group)
-        pmf = Counter(group["games"].astype(int))
-        result[str(team)] = {int(k): v / total for k, v in pmf.items()}
-    return result
+    from src.schedule.calendar import weekly_counts
+    counts = weekly_counts(schedule, week_start_weekday)
+    return {str(team): {int(k): v / len(counts) for k, v in Counter(counts[team]).items()}
+            for team in counts}
 
 
 def fallback_pmf(model_cfg: Mapping) -> dict[int, float]:
@@ -88,6 +71,8 @@ def playoff_week_pmf(
     team: str,
     start_week: int,
     week_start_weekday: int = 1,
+    week_one_start=None,
+    end_week: int | None = None,
 ) -> dict[int, float]:
     """Games-per-week PMF restricted to the fantasy playoff weeks.
 
@@ -97,25 +82,13 @@ def playoff_week_pmf(
     """
     if schedule.empty:
         return {}
-    frame = schedule.copy()
-    if {"home_team", "away_team"}.issubset(frame.columns):
-        frame = pd.concat(
-            [
-                frame[["game_date", "home_team"]].rename(columns={"home_team": "team"}),
-                frame[["game_date", "away_team"]].rename(columns={"away_team": "team"}),
-            ],
-            ignore_index=True,
-        )
-    frame = frame[frame["team"] == team]
-    if frame.empty:
+    from src.schedule.calendar import weekly_counts
+    if start_week < 1 or (end_week is not None and end_week < start_week):
+        raise ValueError('Invalid playoff week interval')
+    counts = weekly_counts(schedule, week_start_weekday, start=week_one_start)
+    if team not in counts:
         return {}
-    frame["week"] = fantasy_week_start(frame["game_date"], week_start_weekday)
-    ordered_weeks = sorted(frame["week"].unique())
-    playoff_weeks = ordered_weeks[start_week - 1:] if start_week <= len(ordered_weeks) else []
-    if not playoff_weeks:
+    selected = counts[team].iloc[start_week - 1:end_week]
+    if selected.empty:
         return {}
-    subset = frame[frame["week"].isin(playoff_weeks)]
-    counts = subset.groupby("week").size()
-    pmf = Counter(counts.astype(int))
-    total = len(counts)
-    return {int(k): v / total for k, v in pmf.items()}
+    return {int(k): v / len(selected) for k, v in Counter(selected).items()}

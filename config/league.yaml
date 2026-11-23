@@ -15,7 +15,7 @@ meta:
   draft_date: "2026-08-30"
   # Set this once the league exists on Sleeper; enables live settings verification
   # via `python -m src.cli verify-league --league-id <id>`.
-  sleeper_league_id: null
+  sleeper_league_id: "1374183914238648320"
   config_version: 1
   last_updated: "2026-08-28"
 
@@ -99,14 +99,10 @@ bonus_rules:
   triple_double_stacks_with_double_double: true
 
   # Does a 50-point game ALSO collect the 40+ bonus?
-  # >>> STILL UNVERIFIED <<<  (default: true)
-  # Confirmed by the commissioner 2026-08-28: 50+ pays 4, 15+ ast pays 3,
-  # 20+ reb pays 3 - these are separate, independently-listed settings, which is
-  # consistent with (but does not prove) the tiers stacking. The 40+ tier at 3
-  # points is carried over from the original handoff.
-  # ACTION: score one known 50-point game in the Sleeper UI and compare with
-  # `python -m src.cli scoring-check`. Flip to false if they disagree.
+  # CONFIRMED by the league manager 2026-09-06: 40+ and 50+ stack.
+  # The live league weights were also reconciled on 2026-09-06.
   points_thresholds_stack: true
+  points_thresholds_stack_verified: true
 
   # Does a quadruple-double pay the triple-double bonus (no separate quad setting)?
   # ASSUMPTION: yes - it satisfies the >=3 category condition.
@@ -142,4 +138,4 @@ calendar:
 draft:
   type: snake               # snake | linear | auction
   rounds: 14                # roster size excluding IR
-  my_draft_slot: null       # 1..teams. Set after the lottery; null = unknown.
+  my_draft_slot: 2       # Emil; confirmed snake order, 2026-09-06.

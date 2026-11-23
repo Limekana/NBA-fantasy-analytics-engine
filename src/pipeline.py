@@ -7,7 +7,7 @@ function turns raw game logs into a draft board, and it is the only path by whic
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -34,6 +34,7 @@ class PipelineResult:
     scored_logs: pd.DataFrame
     warnings: list[str]
     is_synthetic: bool
+    lockin_distributions: dict = field(default_factory=dict)
 
 
 def load_seasons(
@@ -113,9 +114,13 @@ def reconcile_players(base: pd.DataFrame, external: pd.DataFrame) -> pd.DataFram
     source["_has_team"] = source["team"].notna() if "team" in source.columns else False
     source["_has_age"] = source["age"].notna() if "age" in source.columns else False
     source = source.sort_values(["_has_team", "_has_age"], ascending=False)
-    source = source.drop_duplicates(subset=["name_key"], keep="first")
+    # A unique best metadata candidate may disambiguate a retired namesake.
+    # Equally plausible candidates must remain unmatched, never first-row wins.
+    best = source.groupby('name_key')[['_has_team', '_has_age']].transform('first')
+    source = source[(source[['_has_team', '_has_age']] == best).all(axis=1)]
+    source = source[~source.name_key.duplicated(keep=False)]
 
-    carry = [c for c in ("position", "positions", "age", "injury_status",
+    carry = [c for c in ("team", "position", "positions", "age", "birth_date", "injury_status",
                          "years_experience", "sleeper_id") if c in source.columns]
     out["name_key"] = out["player_name"].map(normalise_name)
     merged = out.merge(
@@ -186,8 +191,14 @@ def run_pipeline(
     players: pd.DataFrame | None = None,
     schedule: pd.DataFrame | None = None,
     allow_synthetic: bool = False,
+    current_logs: pd.DataFrame | None = None,
 ) -> PipelineResult:
-    """Raw game logs -> draft board. The single reproducible path."""
+    """Raw game logs -> draft board. The single reproducible path.
+
+    ``current_logs`` are games already played in the projected season. They
+    only update projections (src/projections/in_season.py); profiles, the
+    availability history and the game-context fit stay on complete seasons.
+    """
     warnings: list[str] = []
     engine = ScoringEngine(cfg.scoring)
 
@@ -267,6 +278,21 @@ def run_pipeline(
                 f"sources and their team may be wrong: {', '.join(low_confidence)}"
             )
 
+    if current_logs is not None and not current_logs.empty and projections:
+        from src.projections.in_season import blend_in_season
+        projections = blend_in_season(projections, current_logs, cfg.model)
+        warnings.append(
+            f"In-season update: projections blended with {len(current_logs)} player-games "
+            f"played through {pd.to_datetime(current_logs.game_date).max().date()}")
+
+    # Resolve current team BEFORE schedule valuation, including rookie priors.
+    # Attaching a different team only after valuation would mislabel its schedule.
+    if players is not None and projections:
+        current = reconcile_players(pd.DataFrame([p.to_row() for p in projections]), players)
+        projections = [replace(p, team=str(row['team']) if pd.notna(row['team']) else p.team,
+                               position=str(row['position']) if pd.notna(row['position']) else p.position)
+                       for p, row in zip(projections, current.to_dict('records'))]
+
     season_length = int(cfg.model.get("games_played", {}).get("season_length", 82))
     availability_history = _availability_history(logs, seasons, season_length)
     injuries = cfg.assumptions.get("injuries") or {}
@@ -286,15 +312,33 @@ def run_pipeline(
             injuries.get(projection.player_name),
         )
 
-    # --- schedule ---
+    # --- schedule: disjoint regular/playoff windows on one shared calendar ---
+    playoff_pmfs = {}
+    calendar_notes = []
+    playoff_weeks = 0
     if schedule is not None and not schedule.empty:
-        team_pmfs = games_per_week_by_team(
-            schedule, int(cfg.league.calendar.get("week_start_weekday", 1))
-        )
+        from src.schedule.calendar import regular_schedule, weekly_counts, counts_to_pmfs
+        schedule, schedule_notes = regular_schedule(schedule)
+        counts = weekly_counts(schedule, int(cfg.league.calendar.get('week_start_weekday', 1)),
+                               start=cfg.league.calendar.get('week_one_start'))
+        regular_weeks = int(cfg.league.calendar.get('regular_season_weeks', 22))
+        playoff_start = int(cfg.league.raw.get('playoffs', {}).get('start_week', regular_weeks+1))
+        playoff_end = cfg.league.raw.get('playoffs', {}).get('end_week')
+        if playoff_start <= regular_weeks:
+            raise ValueError('Regular and playoff calendar windows overlap')
+        team_pmfs = counts_to_pmfs(counts.iloc[:regular_weeks])
+        playoff_counts = counts.iloc[playoff_start-1:playoff_end]
+        playoff_weeks = len(playoff_counts)
+        playoff_pmfs = counts_to_pmfs(playoff_counts)
+        calendar_notes = schedule_notes + [
+            'ASSUMPTION: week 1 anchored to first regular NBA fixture unless calendar.week_one_start is set',
+            'ASSUMPTION: playoffs extend to last loaded week unless playoffs.end_week is set']
+        warnings.extend(calendar_notes)
     else:
         # Derive weekly cadence from the historical logs themselves. Better than
         # the flat fallback PMF, but still not the real 2026-27 schedule.
-        historical_schedule = logs[["game_date", "team"]].drop_duplicates()
+        from src.schedule.calendar import latest_historical_schedule
+        historical_schedule = latest_historical_schedule(logs)
         team_pmfs = games_per_week_by_team(
             historical_schedule, int(cfg.league.calendar.get("week_start_weekday", 1))
         )
@@ -310,8 +354,33 @@ def run_pipeline(
         cfg.league, cfg.model, engine, archetypes,
     )
     frame = valuations_to_frame(valuations)
+    if playoff_pmfs and not frame.empty:
+        playoff_values = valuations_to_frame(build_valuations(
+            profiles, projections, games_projections, playoff_pmfs,
+            cfg.league, cfg.model, engine, archetypes))
+        fields = ['player_id', 'conditional_lockin_value', 'weekly_availability', 'used_real_schedule']
+        frame = frame.merge(playoff_values[fields].rename(columns={
+            c: 'playoff_'+c for c in fields if c != 'player_id'}), on='player_id', validate='one_to_one')
+    if not frame.empty:
+        # Also crosswalk explicit rookie priors, which have no game-log metadata.
+        frame = reconcile_players(frame, players) if players is not None else frame
+        if 'sleeper_id' not in frame:
+            frame['sleeper_id'] = ''
+        if 'positions' not in frame:
+            frame['positions'] = frame['position']
+        if schedule is None or schedule.empty:
+            frame['used_real_schedule'] = False
+        frame['playoff_weeks'] = playoff_weeks
+        frame['calendar_notes'] = '; '.join(calendar_notes)
 
     # --- ADP ---
+    from src.valuation import rescale_distribution
+    samples_by_id = {p.player_id: p.fp_sample for p in profiles}
+    lockin_distributions = {str(v.player_id): {
+        'sample': np.round(rescale_distribution(samples_by_id[v.player_id], v.projected_fp_per_game), 6).tolist(),
+        'basis': 'Simulated rookie prior' if str(v.player_id).startswith('ROOKIE_') else 'Historical scores rescaled to projection',
+        'historical_games': v.historical_games,
+    } for v in valuations}
     adp = load_all_adp(cfg.sources, cfg.paths["repo"])
     consensus = consensus_adp(adp) if not adp.empty else pd.DataFrame()
     if consensus.empty:
@@ -331,6 +400,7 @@ def run_pipeline(
 
     return PipelineResult(
         board=board,
+        lockin_distributions=lockin_distributions,
         profiles=profile_frame,
         scored_logs=scored,
         warnings=warnings,
@@ -345,12 +415,15 @@ def _availability_history(
     if "season" not in logs.columns:
         return {}
     counts = logs.groupby(["player_id", "season"]).size().reset_index(name="games")
-    ordered = sorted(set(counts["season"]), reverse=True)
+    ordered = sorted(set(counts["season"]) | set(seasons), reverse=True)
     history: dict[str, list[float]] = {}
     for player_id, group in counts.groupby("player_id"):
         by_season = dict(zip(group["season"], group["games"]))
+        # A whole missed season after the player's debut is 0 games, not a skipped
+        # year; otherwise a season lost to injury reads as an old healthy one.
+        debut = min(by_season)
         history[str(player_id)] = [
-            float(by_season[s]) / season_length for s in ordered if s in by_season
+            float(by_season.get(s, 0)) / season_length for s in ordered if s >= debut
         ]
     return history
 

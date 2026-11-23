@@ -80,6 +80,8 @@ def build_rookie_projections(
     profiles: list[PlayerProfile] = []
 
     for name, entry in rookies.items():
+        from src.projections.consensus import resolve_rookie
+        entry = resolve_rookie(entry)
         if not isinstance(entry, Mapping) or "per36" not in entry:
             continue
 
@@ -224,6 +226,8 @@ def rookie_availability(entry: Mapping, season_length: int = 82) -> float:
     minutes restrictions and load management on non-contending teams - so the
     default sits below a healthy veteran's baseline even with no injury history.
     """
+    from src.projections.consensus import resolve_rookie
+    entry = resolve_rookie(entry)
     if "expected_games" in entry:
         return float(entry["expected_games"]) / season_length
     confidence = _confidence_of(entry)

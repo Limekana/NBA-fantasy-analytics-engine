@@ -21,14 +21,13 @@ expected loss from absences, and why a deal that looks like a clear win on
 talent can grade out flat once the fifth guard is gone.
 
 The two together mean a trade's verdict is a difference of *expected* lineups:
-
-    value = best_lineup(roster) - E[loss when a starter is unavailable]
-
-evaluated before and after the swap.
+average the best legal lineup over joint availability of every player, before
+and after the swap. Single-outage marginal values are descriptive only.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Iterable, Mapping, Sequence
 
 import numpy as np
@@ -65,10 +64,16 @@ class RosterPlayer:
     #: "realistically this lands at one of these positions" instead of claiming
     #: they can fill whatever hole happens to be open.
     slots: tuple[str, ...] = ()
+    positions: tuple[str, ...] = ()
+    injury_status: str = ''
 
     @property
     def label(self) -> str:
         return self.name
+
+    @property
+    def health_risk(self) -> bool:
+        return self.injury_status.strip().lower() not in ('', 'healthy', 'available', 'active')
 
 
 @dataclass(frozen=True)
@@ -128,6 +133,7 @@ def optimal_lineup(players: Sequence[RosterPlayer], league_cfg) -> Lineup:
     difference is small most of the time and decisive exactly when a trade
     changes your positional shape, which is when you are asking.
     """
+    validate_players(players)
     slots = expand_slots(league_cfg)
     if not slots or not players:
         return Lineup(0.0, (), tuple(p.player_id for p in players))
@@ -155,7 +161,8 @@ def optimal_lineup(players: Sequence[RosterPlayer], league_cfg) -> Lineup:
         elif player.is_pick:
             allowed = all_slots
         else:
-            allowed = eligible.get(player.position, frozenset())
+            allowed = frozenset(s for pos in (player.positions or (player.position,))
+                                for s in eligible.get(pos, ()))
         for row, slot in enumerate(slots):
             if slot in allowed:
                 cost[row, column] = -float(player.weekly_value)
@@ -182,41 +189,104 @@ def optimal_lineup(players: Sequence[RosterPlayer], league_cfg) -> Lineup:
 
 
 def roster_strength(players: Sequence[RosterPlayer], league_cfg) -> RosterStrength:
-    """Expected weekly output, charged for the weeks starters are unavailable.
+    """Average legal lineup over joint starter AND backup availability.
 
-    Absences are priced one at a time: for each starter, re-solve the lineup
-    without them and charge the difference, weighted by how often they are out.
-    Two absences in the same week are ignored, which understates the cost
-    slightly - the second hole is always at least as expensive as the first,
-    since it is filled from a shallower bench.
-
-    Doing it this way rather than simply multiplying each player's value by their
-    availability is what makes depth visible. Multiplying prices an absence as if
-    nobody replaced the missing player; re-solving prices it as what it actually
-    costs, which is the gap between the starter and whoever slides up. A deep
-    roster barely notices; a top-heavy one bleeds.
+    Independent weekly absences are a modeling assumption, not medical advice.
+    Leagues with at most eight active roster spots are integrated exactly; others use
+    512 fixed, player-ID-keyed antithetic scenarios shared across trade sides.
+    Healthy marginal losses remain descriptive, not the expectation formula.
     """
     healthy = optimal_lineup(players, league_cfg)
     if not healthy.assignments:
         return RosterStrength(healthy_weekly=0.0, expected_weekly=0.0, lineup=healthy)
 
-    by_id = {p.player_id: p for p in players}
     marginal: dict[str, float] = {}
-    expected_loss = 0.0
 
     for player_id in healthy.starter_ids:
         without = [p for p in players if p.player_id != player_id]
         loss = healthy.total - optimal_lineup(without, league_cfg).total
         marginal[player_id] = loss
-        absence = 1.0 - float(np.clip(by_id[player_id].availability, 0.0, 1.0))
-        expected_loss += absence * loss
+
+    slots = tuple(expand_slots(league_cfg))
+    eligible = eligibility_map(league_cfg)
+    assets = tuple(sorted((p.player_id, float(p.weekly_value), float(p.availability),
+        tuple(i for i, slot in enumerate(slots) if slot in
+              (p.slots or (slots if p.is_pick else tuple(s for pos in (p.positions or (p.position,)) for s in eligible.get(pos, ()))))))
+        for p in players if p.weekly_value > 0 and p.availability > 0))
+    expected = _joint_expectation(assets, len(slots), league_cfg.roster_size <= 8 or getattr(league_cfg, 'exact_availability', False))
 
     return RosterStrength(
         healthy_weekly=healthy.total,
-        expected_weekly=healthy.total - expected_loss,
+        expected_weekly=expected,
         lineup=healthy,
         marginal_value=marginal,
     )
+
+
+@lru_cache(maxsize=4096)
+def _availability_draws(player_id):
+    # FNV-1a followed by a 32-bit avalanche. UTF-8 and unsigned arithmetic
+    # are mirrored in the offline browser. Antithetic pairs reduce noise.
+    seed = 2166136261
+    for byte in player_id.encode('utf-8'):
+        seed = ((seed ^ byte) * 16777619) & 0xffffffff
+    draws = []
+    for i in range(256):
+        x = (seed ^ (((i + 1) * 0x9e3779b9) & 0xffffffff)) & 0xffffffff
+        x = ((x ^ (x >> 16)) * 0x7feb352d) & 0xffffffff
+        x = ((x ^ (x >> 15)) * 0x846ca68b) & 0xffffffff
+        x ^= x >> 16
+        u = (x + .5) / 4294967296
+        draws.extend((u, 1 - u))
+    return tuple(draws)
+
+
+@lru_cache(maxsize=4096)
+def _joint_expectation(assets, n_slots, exact=False):
+    ordered = sorted(assets, key=lambda a: (-a[1], a[0]))
+    uncertain = [a for a in ordered if a[2] < 1]
+    if exact and len(uncertain) > 20:
+        raise ValueError('Exact availability supports at most 20 uncertain assets per roster')
+    if not ordered or not n_slots:
+        return 0.0
+    def total(active):
+        owner = [-1] * n_slots
+        def seat(i, seen):
+            for s in active[i][3]:
+                if s in seen:
+                    continue
+                seen.add(s)
+                if owner[s] == -1 or seat(owner[s], seen):
+                    owner[s] = i
+                    return True
+            return False
+        return sum(a[1] for i, a in enumerate(active) if seat(i, set()))
+    # Select integration mode by league size, not number of uncertain assets.
+    # Switching modes on a cut could manufacture a gain from sampling error.
+    if exact or not uncertain:
+        indices = {a[0]: i for i, a in enumerate(uncertain)}
+        result = 0.0
+        for mask in range(1 << len(uncertain)):
+            weight = 1.0
+            for i, a in enumerate(uncertain):
+                weight *= a[2] if mask & (1 << i) else 1 - a[2]
+            active = [a for a in ordered if a[2] == 1 or mask & (1 << indices[a[0]])]
+            result += weight * total(active)
+        return result
+    draws = {a[0]: _availability_draws(a[0]) for a in uncertain}
+    return sum(total([a for a in ordered if a[2] == 1 or draws[a[0]][i] < a[2]])
+               for i in range(512)) / 512
+
+
+class ExactAvailabilityConfig:
+    """Read-only configuration view for final trade verification, not screening."""
+    exact_availability = True
+
+    def __init__(self, cfg):
+        self._cfg = cfg
+
+    def __getattr__(self, key):
+        return getattr(self._cfg, key)
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +355,8 @@ class TradeEvaluation:
 
     @property
     def verdict(self) -> str:
+        if any(p.health_risk for p in self.give.players + self.get.players):
+            return 'INJURY REVIEW REQUIRED'
         if not self.robust:
             return "TOO CLOSE TO CALL"
         size = abs(self.relative)
@@ -304,13 +376,45 @@ def apply_trade(
     get_players: Sequence[RosterPlayer],
 ) -> list[RosterPlayer]:
     """Roster after the swap. Raises if you are trading somebody you do not have."""
+    validate_players(roster)
+    validate_players(get_players)
     give = list(give_ids)
+    if len(set(give)) != len(give):
+        raise ValueError('Duplicate outgoing player')
     have = {p.player_id for p in roster}
     missing = [g for g in give if g not in have]
     if missing:
         raise ValueError(f"not on your roster: {', '.join(missing)}")
     giving = set(give)
-    return [p for p in roster if p.player_id not in giving] + list(get_players)
+    if giving & {p.player_id for p in get_players}:
+        raise ValueError('A player cannot appear on both sides')
+    result = [p for p in roster if p.player_id not in giving] + list(get_players)
+    validate_players(result)
+    return result
+
+
+def validate_players(players):
+    ids = [p.player_id for p in players]
+    if len(ids) != len(set(ids)) or any(not pid for pid in ids):
+        raise ValueError('Duplicate or empty player ID in roster')
+    if any(not np.isfinite(p.weekly_value) or not np.isfinite(p.availability)
+           or not 0 <= p.availability <= 1 for p in players):
+        raise ValueError('Nonfinite value or invalid availability')
+
+
+def trim_roster(players, league_cfg):
+    """Repeatedly remove the player whose absence leaves the strongest roster.
+
+    Exact for a single cut; greedy for multiple cuts. Ties use stable IDs.
+    """
+    kept, dropped = list(players), []
+    while len(kept) > league_cfg.roster_size:
+        best = max(kept, key=lambda p: (
+            round(roster_strength([q for q in kept if q.player_id != p.player_id], league_cfg).expected_weekly, 8),
+            p.player_id))
+        kept.remove(best)
+        dropped.append(best)
+    return kept, dropped
 
 
 def evaluate_trade(
@@ -331,6 +435,8 @@ def evaluate_trade(
     disagree about whether the trade helps, the honest verdict is that the model
     cannot tell you - and it says so rather than reporting a decimal.
     """
+    if weeks_remaining < 0 or not np.isfinite(stress_fraction) or not 0 <= stress_fraction <= 1:
+        raise ValueError('Invalid weeks remaining or stress fraction')
     roster = list(roster)
     before = roster_strength(roster, league_cfg)
 
@@ -338,14 +444,8 @@ def evaluate_trade(
 
     # Roster limits: a 3-for-1 that leaves you 16 deep in a 14-man league forces
     # cuts, and the cut is part of the price. Drop the least valuable pieces.
-    limit = int(league_cfg.roster_size)
-    dropped: list[str] = []
-    if len(after_roster) > limit:
-        ranked = sorted(after_roster, key=lambda p: float(p.weekly_value))
-        for player in ranked[: len(after_roster) - limit]:
-            dropped.append(player.label)
-        drop_ids = {p.player_id for p in ranked[: len(after_roster) - limit]}
-        after_roster = [p for p in after_roster if p.player_id not in drop_ids]
+    after_roster, cuts = trim_roster(after_roster, league_cfg)
+    dropped = [p.label for p in cuts]
 
     after = roster_strength(after_roster, league_cfg)
 
@@ -390,6 +490,8 @@ def _scale(player: RosterPlayer, factor: float) -> RosterPlayer:
         availability=player.availability,
         is_pick=player.is_pick,
         slots=player.slots,
+        positions=player.positions,
+        injury_status=player.injury_status,
     )
 
 
@@ -398,6 +500,10 @@ def _trade_flags(
 ) -> list[str]:
     """Things the headline number does not say out loud."""
     flags: list[str] = []
+    risks = [p for p in evaluation.give.players + evaluation.get.players if p.health_risk]
+    if risks:
+        flags.append('Unresolved injury status: ' + ', '.join(f'{p.name} ({p.injury_status})' for p in risks)
+                     + '. Historical availability is not a verified recovery timeline.')
 
     if evaluation.dropped:
         flags.append(
@@ -483,6 +589,7 @@ def board_to_roster_players(board) -> dict[str, RosterPlayer]:
     rather than on an internal id.
     """
     from src.adp import normalise_name
+    from src.league.identity import clean_id, positions_of
 
     if "lockin_value" not in getattr(board, "columns", ()):
         raise ValueError(
@@ -504,14 +611,20 @@ def board_to_roster_players(board) -> dict[str, RosterPlayer]:
         if not name:
             continue
         key = normalise_name(name)
+        if key in players:
+            raise ValueError(f'Ambiguous normalized player name: {name}; use a stable-ID catalogue')
+        sid = clean_id(getattr(row, 'sleeper_id', ''))
+        pid = ('sleeper:' + sid) if sid else clean_id(getattr(row, 'player_id', '')) or key
         players[key] = RosterPlayer(
-            player_id=key,
+            player_id=pid,
             name=name,
             position=str(getattr(row, "position", "")),
-            weekly_value=max(number(getattr(row, "lockin_value", 0.0), 0.0), 0.0),
+            weekly_value=max(number(getattr(row, 'conditional_lockin_value', getattr(row, 'lockin_value', 0.0)), 0.0), 0.0),
             availability=float(
-                np.clip(number(getattr(row, "availability_probability", 1.0), 1.0), 0.0, 1.0)
+                np.clip(number(getattr(row, 'weekly_availability', getattr(row, "availability_probability", 1.0)), 1.0), 0.0, 1.0)
             ),
+            positions=positions_of(getattr(row, 'positions', '')),
+            injury_status=clean_id(getattr(row, 'injury_status', '')),
         )
     return players
 

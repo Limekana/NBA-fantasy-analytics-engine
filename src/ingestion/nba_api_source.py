@@ -58,6 +58,14 @@ class NBAApiSource(DataSource):
             timeout=self.timeout,
         )
         frame = response.get_data_frames()[0]
+        # coerce_types is permissive for legacy CSVs. A live refresh must not
+        # turn a missing/invalid score field into a fabricated zero.
+        required = ['MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'FTM', 'FG3M']
+        if not set(required) <= set(frame) or frame[required].isna().any().any():
+            raise ValueError('NBA response is missing required box-score values')
+        for column in required:
+            if column != 'MIN' and pd.to_numeric(frame[column], errors='coerce').isna().any():
+                raise ValueError('NBA response contains invalid box-score values')
         time.sleep(self.rate_limit_seconds)
 
         renamed = frame.rename(

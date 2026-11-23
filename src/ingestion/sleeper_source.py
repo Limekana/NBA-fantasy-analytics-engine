@@ -38,6 +38,12 @@ SLEEPER_SCORING_KEYS: dict[str, str] = {
     "fgm3": "three_pointers_made",
     "dd": "double_double",
     "td": "triple_double",
+    "to": "turnovers",
+    "tpm": "three_pointers_made",
+    "bonus_pt_40p": "points_40_plus",
+    "bonus_pt_50p": "points_50_plus",
+    "bonus_ast_15p": "assists_15_plus",
+    "bonus_reb_20p": "rebounds_20_plus",
 }
 
 
@@ -67,6 +73,7 @@ class SleeperSource(DataSource):
                     "position": (positions[0] if positions else record.get("position")),
                     "positions": "|".join(positions),
                     "age": record.get("age"),
+                    "birth_date": record.get("birth_date"),
                     "injury_status": record.get("injury_status"),
                     "years_experience": record.get("years_exp"),
                     "status": record.get("status"),
@@ -78,6 +85,24 @@ class SleeperSource(DataSource):
     def fetch_league_settings(self, league_id: str) -> dict:
         """Raw league settings, for verifying config/league.yaml."""
         return _get_json(LEAGUE_URL.format(league_id=league_id))
+
+    def fetch_users(self, league_id):
+        return _get_json(LEAGUE_URL.format(league_id=league_id) + '/users')
+
+    def fetch_rosters(self, league_id):
+        return _get_json(LEAGUE_URL.format(league_id=league_id) + '/rosters')
+
+    def fetch_drafts(self, league_id):
+        return _get_json(LEAGUE_URL.format(league_id=league_id) + '/drafts')
+
+    def fetch_draft(self, draft_id):
+        return _get_json(f'https://api.sleeper.app/v1/draft/{draft_id}')
+
+    def fetch_picks(self, draft_id):
+        return _get_json(f'https://api.sleeper.app/v1/draft/{draft_id}/picks')
+
+    def fetch_transactions(self, league_id, round_number):
+        return _get_json(LEAGUE_URL.format(league_id=league_id) + f'/transactions/{round_number}')
 
 
 def diff_scoring(league_payload: dict, configured: dict) -> list[str]:
@@ -105,11 +130,14 @@ def diff_scoring(league_payload: dict, configured: dict) -> list[str]:
             )
 
     for our_key, our_value in configured.items():
-        reverse = {v: k for k, v in SLEEPER_SCORING_KEYS.items()}
-        sleeper_key = reverse.get(our_key)
-        if sleeper_key and sleeper_key not in live and float(our_value) != 0.0:
+        aliases = [k for k, v in SLEEPER_SCORING_KEYS.items() if v == our_key]
+        if aliases and not any(k in live for k in aliases) and float(our_value) != 0.0:
             differences.append(
                 f"config/league.yaml has {our_key}={our_value} but Sleeper does not score it"
             )
+
+    for key, value in live.items():
+        if key not in SLEEPER_SCORING_KEYS and float(value) != 0:
+            differences.append(f'Unsupported nonzero Sleeper scoring key: {key}={value}')
 
     return differences

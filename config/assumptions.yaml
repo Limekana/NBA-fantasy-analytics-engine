@@ -70,6 +70,38 @@ exclude: []
 # =============================================================================
 rookies:
 
+  "Yaxel Lendeborg":
+    team: GSW
+    position: PF
+    age: 23
+    confidence: medium
+    projection_season: "2026-27"
+    # Each shared per-game field is averaged once per input. User source origin
+    # is unknown: this is a two-input estimate, not independent expert consensus.
+    projection_sources:
+      - source_id: user_20260907
+        season: "2026-27"
+        units: per_game
+        values: {minutes: 25.5, points: 9.4, rebounds: 5.8, assists: 2.4,
+                 steals: 1.1, blocks: 0.9, three_pointers_made: 0.8, turnovers: 1.2}
+      - source_id: fanscout
+        url: https://fanscout.pro/rookie-projections
+        retrieved: "2026-09-07"
+        season: "2026-27"
+        units: per_game
+        # FTM = displayed 1.91 FTA * .76 FT%; approximate from rounded inputs.
+        values: {minutes: 26, expected_games: 73, points: 10.47, rebounds: 5.99,
+                 assists: 2.25, steals: 0.81, blocks: 0.86, three_pointers_made: 1.18,
+                 turnovers: 2.05, free_throws_made: 1.4516}
+    fallbacks: {personal_fouls: 2.5}
+    note: >
+      PROVISIONAL 2026-27 blend of user-supplied projection (original author unknown)
+      and FanScout https://fanscout.pro/rookie-projections, checked 2026-09-07.
+      Shared per-game stats averaged equally; 73 GP from FanScout only.
+      FTM approx 1.4516 = 1.91 FTA x 76% FT. PF 2.5/game is an editable modeling
+      assumption, NOT a sourced projection. User FG% 48.5 is not a scoring category.
+      Rookie spread and bonuses are simulated priors, not observed NBA games.
+
   # --- Tier R1: confirmed top-4 picks, immediate starting role -------------
   "AJ Dybantsa":
     team: "WAS"

@@ -1,0 +1,4 @@
+player_name,sleeper_id,player_id,conditional_lockin_value,weekly_availability,historical_games,playoff_weeks,team
+Player 1,1,1,20.0,0.9,40,3,BOS
+Player 4,4,4,20.0,0.9,40,3,BOS
+Player 5,5,5,20.0,0.9,40,3,BOS

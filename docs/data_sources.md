@@ -2,24 +2,12 @@
 
 Handoff §5: *prioritise reliable and legally accessible public data.*
 
-> ## Read this first
->
-> The sandbox this repository was built in **blocks outbound HTTPS** to every NBA
-> data host (HTTP 403 on CONNECT from the egress proxy):
->
-> - `stats.nba.com`
-> - `www.basketball-reference.com`
-> - `api.sleeper.app`
-> - `support.sleeper.com`
->
-> **No real NBA data has been ingested.** The ingestion adapters are written
-> against documented endpoint contracts and unit-tested against fixtures, but
-> have never executed against the live APIs. Run them from your own machine.
->
-> Everything that does not need network access — the scoring engine, the Lock-In
-> simulator, projections, the draft board, the live assistant — is fully working
-> and tested, and the `demo` command proves the pipeline end-to-end on synthetic
-> data.
+> Updated September 6, 2026: this working repository contains real NBA logs for
+> 2023–24, 2024–25 and 2025–26, player metadata, and a 2026–27 schedule export.
+> Sleeper league ingestion has now run successfully: all 140 draft picks and ten
+> completed transactions reconcile to the ten current rosters. Access can still
+> depend on the task's network permissions. See [league_state.md](league_state.md)
+> for snapshot provenance, refresh commands, coverage gaps, and offline imports.
 
 ---
 
@@ -84,7 +72,8 @@ python -m src.cli build-board --seasons 2025-26 2024-25 2023-24
 ### Player metadata (age and position)
 
 Ages drive the age curve and the availability baseline; positions drive scarcity.
-Game logs alone carry neither. Either:
+Game logs alone carry neither. Sleeper metadata includes birth dates, which let
+the model align age to the projected season during historical backtests. Either:
 
 ```bash
 # from Sleeper (needs network) - also gives injury status

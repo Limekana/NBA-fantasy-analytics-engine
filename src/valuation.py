@@ -103,9 +103,14 @@ class PlayerValuation:
     archetype: str = ""
     assumption_notes: str = ""
     is_synthetic: bool = False
+    weekly_availability: float = 1.0
+    conditional_lockin_value: float = 0.0
 
     def to_row(self) -> dict:
         row = {
+            "player_id": self.player_id,
+            "weekly_availability": self.weekly_availability,
+            "conditional_lockin_value": self.conditional_lockin_value,
             "player_name": self.player_name,
             "team": self.team,
             "position": self.position,
@@ -229,12 +234,17 @@ def rescale_distribution(sample: np.ndarray, target_mean: float) -> np.ndarray:
     which is what the Lock-In simulator actually consumes. An additive shift would
     distort the right tail that drives Lock-In value.
     """
+    sample = np.asarray(sample, dtype=float)
+    if not np.isfinite(target_mean) or not np.isfinite(sample).all():
+        raise ValueError('Scoring distribution and target mean must be finite')
     if sample.size == 0:
-        return sample
+        return sample.copy()
     current = float(np.mean(sample))
-    if current <= 0:
-        return np.full_like(sample, max(target_mean, 0.0))
-    return np.clip(sample * (target_mean / current), 0.0, None)
+    # Never clip negative fantasy points. For nonpositive means use a location
+    # shift: a negative multiplier would invert good and bad nights.
+    if current <= 1e-8 or target_mean <= 0:
+        return sample + (target_mean - current)
+    return sample * (target_mean / current)
 
 
 def compute_risk(
@@ -307,19 +317,19 @@ def build_valuations(
         projected_games = games.expected_games if games else float(profile.games)
         availability = games.availability_probability if games else profile.games / season_length
 
-        # In Lock-In, availability reduces the number of *usable* weeks and thins
-        # the games within a week, rather than scaling a season point total.
-        weeks_available = weeks_in_season * float(np.clip(availability / 0.85, 0.0, 1.0))
-        weeks_available = min(weeks_available, weeks_in_season)
-        season_value = lock_profile.lockin_value * weeks_available
+        from src.league.weekly import weekly_value
+        correlation = float(model_cfg.get('weekly_availability', {}).get('correlation', 0.5))
+        conditional, weekly_available = weekly_value(
+            sample, pmf, float(np.clip(availability, 0, 1)), correlation)
+        weeks_available = weeks_in_season * weekly_available
+        season_value = conditional * weeks_available
 
         notes = "; ".join(
             n for n in (projection.assumption_notes, games.assumption_notes if games else "") if n
         )
+        notes += f'; ASSUMPTION: weekly absence correlation mixture={correlation:g}'
         if not used_real:
             notes = "; ".join(filter(None, [notes, "ASSUMPTION: fallback games-per-week PMF (no real schedule loaded)"]))
-
-        percentile_scale = projected_fp / profile.mean_fp if profile.mean_fp > 0 else 1.0
 
         valuations.append(
             PlayerValuation(
@@ -329,7 +339,7 @@ def build_valuations(
                 position=projection.position,
                 age=projection.age,
                 historical_fp_per_game=profile.mean_fp,
-                historical_games=profile.games,
+                historical_games=0 if str(projection.player_id).startswith('ROOKIE_') else profile.games,
                 projected_minutes=projection.projected_minutes,
                 projected_fp_per_game=projected_fp,
                 projected_base_fp=base_fp,
@@ -338,12 +348,12 @@ def build_valuations(
                 games_floor=games.games_floor if games else float(profile.games),
                 games_ceiling=games.games_ceiling if games else float(profile.games),
                 availability_probability=availability,
-                median_fp=profile.median_fp * percentile_scale,
-                floor_fp=profile.floor * percentile_scale,
-                ceiling_fp=profile.ceiling * percentile_scale,
-                std_fp=profile.std_fp * percentile_scale,
-                percentiles={p: v * percentile_scale for p, v in profile.percentiles.items()},
-                threshold_probabilities=dict(profile.threshold_probabilities),
+                median_fp=float(np.median(sample)),
+                floor_fp=float(np.percentile(sample, 10)),
+                ceiling_fp=float(np.percentile(sample, 90)),
+                std_fp=float(np.std(sample, ddof=1)) if sample.size > 1 else 0.,
+                percentiles={p: float(np.percentile(sample, p)) for p in profile.percentiles},
+                threshold_probabilities={t: float(np.mean(sample >= t)) for t in profile.threshold_probabilities},
                 bonus_rates=dict(profile.bonus_rates),
                 games_per_week=expected_games_per_week(pmf),
                 lockin_weekly_value=lock_profile.lockin_value,
@@ -360,6 +370,8 @@ def build_valuations(
                 archetype=archetypes.get(projection.player_id, ""),
                 assumption_notes=notes,
                 is_synthetic=projection.is_synthetic or profile.is_synthetic,
+                weekly_availability=weekly_available,
+                conditional_lockin_value=conditional,
             )
         )
     return valuations

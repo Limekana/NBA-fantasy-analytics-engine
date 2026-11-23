@@ -1,0 +1,10 @@
+draft_order:
+- A
+- B
+league_id: '123'
+manager_aliases:
+  A:
+  - alpha
+  B:
+  - beta
+my_team: A

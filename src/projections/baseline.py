@@ -31,6 +31,17 @@ from src.schemas import BOX_SCORE_FIELDS
 RATE_STATS = list(BOX_SCORE_FIELDS)
 
 
+def _age_for_season(birth_date, season_start_year: int, fallback_age: float) -> float:
+    """Age at the projected season's October 1, or the existing one-year fallback."""
+    birthday = pd.to_datetime(birth_date, errors='coerce')
+    if pd.isna(birthday):
+        return fallback_age + 1.0
+    age = season_start_year - int(birthday.year)
+    if (int(birthday.month), int(birthday.day)) > (10, 1):
+        age -= 1
+    return float(age)
+
+
 @dataclass
 class PlayerProjection:
     """Projected 2026-27 per-game line, with its assumptions attached."""
@@ -99,11 +110,6 @@ def project_players(
     method = str(proj_cfg.get("method", "model")).lower()
     season_weights = {str(k): float(v) for k, v in proj_cfg.get("season_weights", {}).items()}
 
-    if method in ("last_season", "blend"):
-        # Recency-only weighting: the most recent season available per player.
-        available_seasons = sorted(per36["season"].astype(str).unique(), reverse=True)
-        if available_seasons:
-            season_weights = {available_seasons[0]: 1.0}
     shrinkage_k = float(proj_cfg.get("shrinkage_games_k", 20))
     age_curve = proj_cfg.get("age_curve", {})
     minutes_cfg = proj_cfg.get("minutes", {})
@@ -123,6 +129,9 @@ def project_players(
     positional_means = _positional_means(per36, meta)
 
     projections: list[PlayerProjection] = []
+    training_years = [int(str(season)[:4]) for season in per36['season'].dropna().unique()
+                      if str(season)[:4].isdigit()]
+    projected_season_year = max(training_years) + 1 if training_years else None
     for player_id, group in per36.groupby("player_id", sort=False):
         info = meta.loc[player_id] if player_id in meta.index else None
         name = str(info["player_name"]) if info is not None and "player_name" in info else str(player_id)
@@ -131,11 +140,22 @@ def project_players(
 
         position = str(info["position"]) if info is not None and "position" in info else ""
         age = float(info["age"]) if info is not None and "age" in info and pd.notna(info["age"]) else 27.0
-        # Age forward one year: history is last season, we project the next one.
-        projected_age = age + 1.0
+        # Birth dates are stable through a walk-forward holdout. A present-day
+        # age from Sleeper would otherwise leak into projections for past years.
+        if projected_season_year is None:
+            projected_age = age + 1.0
+        else:
+            birth_date = info.get('birth_date') if info is not None else None
+            projected_age = _age_for_season(birth_date, projected_season_year, age)
 
         available = {str(row["season"]): row for _, row in group.iterrows()}
-        weights = {s: w for s, w in season_weights.items() if s in available}
+        if method in ("last_season", "blend") and available:
+            # Choose the latest season this player actually played. A global
+            # latest-season weight would otherwise fall back to equal weights
+            # across stale years for players absent from that season.
+            weights = {max(available): 1.0}
+        else:
+            weights = {s: w for s, w in season_weights.items() if s in available}
         if not weights:
             # Season labels did not match config; fall back to using everything.
             weights = {s: 1.0 for s in available}

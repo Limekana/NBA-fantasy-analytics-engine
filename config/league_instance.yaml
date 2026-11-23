@@ -1,0 +1,41 @@
+schema_version: 1
+league_id: "1374183914238648320"
+my_team: Emil
+draft_order: [Mymmeli, Emil, Eppu, Santtu, Luki, Antti, Elppu, Mikki, Olkku, Tomppa]
+manager_aliases:
+  Mymmeli: [lukamagic6]
+  Emil: []
+  Eppu: [TheBigEDawgs]
+  Santtu: []
+  Luki: [Joe niggles]
+  Antti: [nextmj]
+  Elppu: []
+  Mikki: [Mikkelsson]
+  Olkku: [Olkku55]
+  Tomppa: [BBL Bandits]
+# Preserved user evidence. These are fallback inputs, never verified API history.
+manual:
+  draft_file: drafted.txt
+  missing_picks:
+    139: {player: "sleeper:1526", note: "Zach LaVine; confirmed by user"}
+    140: {player: "sleeper:4891", note: "Darius Acuff; inferred from full Mymmeli roster; verify from Sleeper"}
+  name_corrections:
+    Steph Curry: Stephen Curry
+    Dearon Fox: De'Aaron Fox
+    Zion Williams: Zion Williamson
+    Keyshawn George: Kyshawn George
+    Brandon Podziemski: Brandin Podziemski
+    Yaxel Lendeborg: Yaxel Lendeborg
+  transactions:
+    - {team: Olkku, add: Davion Mitchell}
+    - {team: Tomppa, add: Jusuf Nurkic}
+    - {team: Mymmeli, add: "Day'Ron Sharpe"}
+    - {team: Eppu, add: Julian Strawther}
+    - {team: Mymmeli, drop: "Day'Ron Sharpe"}
+    - {team: Eppu, add: Jerami Grant, drop: Julian Strawther}
+    - {team: Mymmeli, add: Ajay Mitchell}
+    - {team: Elppu, add: "Day'Ron Sharpe"}
+    - {team: Santtu, add: Julian Strawther}
+    - {team: Emil, drop: Jaime Jaquez Jr., add: Daniel Gafford}
+  current_emil: [Luka Doncic, Jalen Williams, Deni Avdija, Dyson Daniels, Bam Adebayo, Ausar Thompson, Donovan Clingan, Keyonte George, Zach LaVine, Kevin Porter Jr., Jimmy Butler, Saddiq Bey, Derik Queen, Daniel Gafford]
+  current_mymmeli: [James Harden, Trey Murphy, Josh Giddey, Zion Williamson, Domantas Sabonis, Caleb Wilson, Nikola Jokic, Darius Garland, Onyeka Okongwu, Ryan Rollins, Ajay Mitchell, Darius Acuff, Kyshawn George, Nic Claxton, Kyrie Irving]

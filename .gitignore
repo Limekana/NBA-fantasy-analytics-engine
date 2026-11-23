@@ -16,5 +16,6 @@ data/external/**
 !data/external/adp/*.csv
 
 outputs/**
+data/league/**
 !outputs/.gitkeep
 !outputs/reports/.gitkeep

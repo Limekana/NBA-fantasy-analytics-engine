@@ -635,6 +635,70 @@ Everything below is background rather than instructions.
 
 ## Status
 
+### Post-draft league management (September 7, 2026)
+
+The local copy now has real NBA data for three seasons and a reconciled Sleeper
+league snapshot (140 picks, ten transactions, all ten rosters). The original
+setup instructions below remain useful for fresh installations; older claims
+that this local copy contains no real data are superseded by this status.
+
+```powershell
+python -m src.cli league-sync --through-round 1
+python -m src.cli league-build
+python -m src.cli league-dashboard
+Start-Process outputs/league_dashboard.html
+```
+
+For a refresh button, double-click `Open League Dashboard.cmd` in the repository
+root and use the dashboard at `http://127.0.0.1:8765/`. **Refresh from Sleeper**
+updates verified roster moves, the free-agent pool, injury metadata and positional
+needs using the existing projections. It does not make transactions in Sleeper.
+The HTML file still works offline. See [refresh setup and safety](docs/league_state.md).
+
+**Refresh NBA performance** separately downloads the configured historical seasons
+and rebuilds projections. Original downloads are preserved; failed refreshes keep
+the working dashboard. Download time, latest game date and forecast build time are
+shown separately. It does not update the schedule, rookie priors or season weights.
+
+League desk provides My Team, League Rosters, Team Strengths, Free Agents,
+two-sided Trade Evaluator, Trade Partners, **Automatic Trades**, and a
+**head-to-head Lock-In Advisor**, entirely offline after generation.
+**Power Rankings** orders all teams by exact projected weekly lineup strength,
+with regular/playoff views, a separate injury-stress ordering, bench depth and
+named injury/IR cautions. It updates from each refreshed roster snapshot and is
+not a prediction of championship odds.
+**Positional Needs** ranks production gaps and injury-cover needs against the
+league, with separate regular/playoff views. Automatic Trades can target your
+top needs or a chosen position; both trade evaluators show needs before/after.
+The default automatic approach exchanges surplus wings for added depth while
+keeping existing target-position players and positional leaders. Both browser
+trade tools exclude assumed free-agent claims by default; automatic search also
+requires both sides to pass the selected pessimistic stress check. Switch to
+broader search or exploratory settings explicitly when desired.
+**Pay for positional fit** allows a bounded individual-value overpay to strengthen
+a chosen position while improving your actual lineup. It can allow a small opponent
+lineup loss, shown explicitly, provided they gain individual model value. Luka-level
+top assets and existing target-position players remain protected. This mode is
+speculative, not a claim of market fairness or acceptance. C-eligible bigs are not
+treated as surplus wings.
+Use the current league leg instead of `1` on later refreshes.
+
+Yaxel Lendeborg now has an explicit provisional rookie blend (user projection +
+FanScout, with an editable personal-foul assumption). All ten current active
+rosters have projections, including Eppu. Unknown players still block affected
+analytics rather than receiving zero values. Schedule boundaries, unfinished fixtures, rookie priors,
+weekly availability and waiver access remain explicit modeling caveats.
+See [post-draft documentation](docs/league_state.md) for commands and mathematics.
+See [new decision tools](docs/decision_tools.md) for testing the tools, projection
+sources, search coverage, and the difference between maximizing points and
+maximizing a modeled head-to-head win chance. Refresh opponent pairings with
+`python -m src.cli league-matchups --week 1`, then `league-dashboard`. Matchup
+snapshots do not provide verified live per-player lock state.
+Lock-In now preserves negative fantasy scores and can evaluate the selected
+remaining fixtures in order. Experimental opponent/venue/back-to-back factors are
+capped and used only when they pass a historical holdout check; missing context
+stays neutral. These are not calibrated win odds or live injury forecasts.
+
 | Component | State |
 |---|---|
 | Scoring engine | Working, 260 tests |
